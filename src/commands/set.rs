@@ -1,24 +1,30 @@
-use crate::{api, config, ssh};
+use crate::{api, config, ssh, utils}; // 引入 utils
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-pub async fn handle_set(project: String, environment: String) -> Result<()> {
+// 参数改为单个 String
+pub async fn handle_set(target_str: String) -> Result<()> {
+    // 解析 target
+    let target = utils::parse_target(&target_str)?;
+    
     let cfg = config::load_config().context("Could not load config. Please log in with `ops login`.")?;
     let token = cfg.token.context("You are not logged in. Please run `ops login` first.")?;
     
-    println!("Fetching your public SSH key from ~/.ssh/id_rsa.pub...");
+    println!("Checking SSH key...");
+    // 这里的 get_default_pubkey 已经集成了自动创建逻辑
     let pubkey = ssh::get_default_pubkey()?;
-    println!("{}", "✔ Found public key.".green());
+    println!("{}", "✔ SSH key ready.".green());
 
-    println!("Binding this server to project '{}' and environment '{}'...", project.cyan(), environment.cyan());
-    let res = api::set_node(&token, &project, &environment, &pubkey).await?;
+    println!("Binding this server to project '{}' environment '{}'...", target.project.cyan(), target.environment.cyan());
+    
+    // 使用解析出来的字段
+    let res = api::set_node(&token, &target.project, &target.environment, &pubkey).await?;
 
     println!("{}", format!("✔ {}", res.message).green());
 
-    println!("Adding CI public key to ~/.ssh/authorized_keys for automated deployments...");
+    println!("Adding CI public key to ~/.ssh/authorized_keys...");
     ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
-    println!("{}", "✔ CI key added successfully.".green());
-    println!("\n{}", "Setup complete! Your CI/CD pipeline can now deploy to this server.".bold());
     
+    println!("{}", "✔ Setup complete!".green());
     Ok(())
 }

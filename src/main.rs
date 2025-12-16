@@ -7,6 +7,8 @@ mod commands;
 mod config;
 mod ssh;
 mod types;
+mod utils;
+mod update; // 确保有这个模块
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -18,34 +20,38 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Register a new user account
     Register,
-    
-    /// Log in to the ops.autos service
     Login,
-    
-    /// Display the current logged-in user info
     Whoami,
     
-    /// Bind this server to a project environment
+    /// Bind this server (format: environment.project)
     Set {
-        #[arg(long)]
-        project: String,
-        #[arg(long)]
-        environment: String,
+        target: String,
+    },
+
+    /// SSH into a server (format: environment.project)
+    Ssh {
+        target: String,
     },
 
     /// Manage projects
-    #[command(subcommand)]
+    #[command(subcommand)] // <--- 修复点 1：必须加这个属性
     Project(ProjectCommands),
-    
+
     /// Interact with the current server environment
-    #[command(subcommand)]
+    #[command(subcommand)] // <--- 修复点 2：必须加这个属性
     Server(ServerCommands),
 
-    /// Manage CI/CD keys for a project environment
-    #[command(subcommand)]
-    CiKey(CiKeyCommands),
+    #[command(alias = "ci-key")]
+    CiKeys {
+        target: String,
+    },
+
+    /// Update ops to the latest version
+    Update,
+    
+    /// Check current version info
+    Version,
 }
 
 #[derive(Subcommand)]
@@ -60,36 +66,52 @@ enum ServerCommands {
     Whoami,
 }
 
-#[derive(Subcommand)]
-enum CiKeyCommands {
-    /// Get the private SSH key for CI/CD deployment
-    GetPrivate {
-        #[arg(long)]
-        project: String,
-        #[arg(long)]
-        environment: String,
-    }
-}
-
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    // --- FIX HERE: Change `.` to `::` ---
     let cli = Cli::parse();
     
+    // --- 自动版本检查逻辑 ---
+    let should_check = match &cli.command {
+        Commands::Update | Commands::Version => false,
+        _ => true
+    };
+
+    if should_check {
+        // 异步检查更新，忽略错误以免影响主流程
+        let _ = tokio::task::spawn_blocking(|| {
+            let _ = update::check_for_update(true); 
+        }).await;
+    }
+
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,
         Commands::Whoami => commands::whoami::handle_whoami().await,
-        Commands::Set { project, environment } => commands::set::handle_set(project.clone(), environment.clone()).await,
+        
+        Commands::Set { target } => commands::set::handle_set(target.clone()).await,
+        Commands::Ssh { target } => commands::ssh::handle_ssh(target.clone()).await,
+        Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
+
         Commands::Project(cmd) => match cmd {
             ProjectCommands::Create { name } => commands::project::handle_create_project(name.clone()).await,
         },
         Commands::Server(cmd) => match cmd {
             ServerCommands::Whoami => commands::server::handle_server_whoami().await,
         },
-        Commands::CiKey(cmd) => match cmd {
-            CiKeyCommands::GetPrivate { project, environment } => commands::ci_key::handle_get_ci_private_key(project.clone(), environment.clone()).await,
+        
+        // 更新相关命令
+        Commands::Update => commands::update::handle_update().await,
+        Commands::Version => {
+            println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
+            tokio::task::spawn_blocking(|| {
+                if let Ok(Some(v)) = update::check_for_update(false) {
+                    println!("Latest version:  {}", v.green());
+                    println!("Run `ops update` to upgrade.");
+                } else {
+                    println!("You are on the latest version.");
+                }
+            }).await?;
+            Ok(())
         },
     };
 
