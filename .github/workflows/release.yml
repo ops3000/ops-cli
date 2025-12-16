@@ -1,50 +1,68 @@
-name: Release CLI
+name: Release CLI # Workflow 的名字
 
+# 触发条件：只有当推送的 tag 满足 v* 格式时（如 v0.1.0, v1.0.0）才运行
 on:
   push:
     tags:
-      - 'v*' # 当推送 v0.1.0 这样的 tag 时触发
+      - 'v*'
+
+# 权限设置：允许这个 Workflow 写入仓库内容（为了创建 Release 和上传文件）
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
     name: Build release binaries
-    runs-on: ${{ matrix.os }}
+    # 策略矩阵：这允许我们在同一份配置下，并行运行多个任务
     strategy:
+      fail-fast: false # 如果一个平台失败了，不要取消其他平台的任务
       matrix:
         include:
+          # --- Linux (AMD64 / x86_64) ---
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: ops
-            asset_name: ops-linux-amd64
+            artifact_name: ops-cli # 编译出来的文件名 (Cargo.toml 中的 name)
+            asset_name: ops-linux-amd64 # 上传到 Release 时的重命名
+
+          # --- macOS (Intel / AMD64) ---
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: ops
+            artifact_name: ops-cli
             asset_name: ops-darwin-amd64
+
+          # --- macOS (Apple Silicon / ARM64) ---
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: ops
+            artifact_name: ops-cli
             asset_name: ops-darwin-arm64
 
+    # 在矩阵定义的操作系统上运行
+    runs-on: ${{ matrix.os }}
+
     steps:
-    - uses: actions/checkout@v3
+    # 1. 拉取代码
+    - name: Checkout code
+      uses: actions/checkout@v3
 
+    # 2. 安装 Rust 工具链
     - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
+        targets: ${{ matrix.target }}
 
-    - name: Build
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --release --target=${{ matrix.target }}
+    # 3. 编译二进制文件 (Release 模式)
+    - name: Build binary
+      run: cargo build --release --target ${{ matrix.target }}
 
-    - name: Rename binary
+    # 4. 重命名二进制文件
+    # Cargo 编译出来的默认在 target/<架构>/release/ 下
+    # 我们把它复制出来并改名，方便上传
+    - name: Prepare binary
       run: |
         cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
 
+    # 5. 上传到 GitHub Releases
+    # 这个步骤会自动检测 tag，创建一个 Release，并把文件传上去
     - name: Upload binaries to Release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
