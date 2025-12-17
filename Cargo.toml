@@ -6,12 +6,21 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.4", features = ["derive", "cargo"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
+
+# --- 修改重点：禁用默认功能，启用 rustls ---
+# default-features = false 会关闭默认的 OpenSSL 依赖
+# rustls-tls 启用纯 Rust 的 TLS 实现
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 colored = "2.0"
 rpassword = "7.3"
 dirs = "5.0"
 anyhow = "1.0"
-self_update = { version = "0.42.0", features = ["archive-zip", "compression-zip-deflate"] }
+
+# --- 修改重点：self_update 也需要切换到 rustls ---
+# 同样禁用默认功能，显式开启 rustls 支持
+self_update = { version = "0.42.0", default-features = false, features = ["archive-zip", "compression-zip-deflate", "rustls"] }
+
 semver = "1.0.27"

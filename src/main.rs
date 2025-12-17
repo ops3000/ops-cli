@@ -8,7 +8,7 @@ mod config;
 mod ssh;
 mod types;
 mod utils;
-mod update; // 确保有这个模块
+mod update;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -35,17 +35,29 @@ enum Commands {
     },
 
     /// Manage projects
-    #[command(subcommand)] // <--- 修复点 1：必须加这个属性
+    #[command(subcommand)]
     Project(ProjectCommands),
 
     /// Interact with the current server environment
-    #[command(subcommand)] // <--- 修复点 2：必须加这个属性
+    #[command(subcommand)]
     Server(ServerCommands),
 
     #[command(alias = "ci-key")]
     CiKeys {
         target: String,
     },
+    
+    // --- 新增命令 ---
+    /// Get the public IP address of a server
+    Ip {
+        target: String,
+    },
+
+    /// Ping a server to check its reachability
+    Ping {
+        target: String,
+    },
+    // --- 新增结束 ---
 
     /// Update ops to the latest version
     Update,
@@ -70,14 +82,12 @@ enum ServerCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    // --- 自动版本检查逻辑 ---
     let should_check = match &cli.command {
         Commands::Update | Commands::Version => false,
         _ => true
     };
 
     if should_check {
-        // 异步检查更新，忽略错误以免影响主流程
         let _ = tokio::task::spawn_blocking(|| {
             let _ = update::check_for_update(true); 
         }).await;
@@ -92,6 +102,11 @@ async fn main() -> Result<()> {
         Commands::Ssh { target } => commands::ssh::handle_ssh(target.clone()).await,
         Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
 
+        // --- 新增命令的匹配逻辑 ---
+        Commands::Ip { target } => commands::ip::handle_ip(target.clone()).await,
+        Commands::Ping { target } => commands::ping::handle_ping(target.clone()).await,
+        // --- 新增结束 ---
+
         Commands::Project(cmd) => match cmd {
             ProjectCommands::Create { name } => commands::project::handle_create_project(name.clone()).await,
         },
@@ -99,7 +114,6 @@ async fn main() -> Result<()> {
             ServerCommands::Whoami => commands::server::handle_server_whoami().await,
         },
         
-        // 更新相关命令
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
             println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
