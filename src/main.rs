@@ -71,7 +71,6 @@ enum ProjectCommands {
 
     /// List all projects and their servers. Optional name to filter.
     List {
-        /// Optional project name to show only that project
         name: Option<String>,
     },
 }
@@ -86,16 +85,7 @@ enum ServerCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    let should_check = match &cli.command {
-        Commands::Update | Commands::Version => false,
-        _ => true
-    };
-
-    if should_check {
-        let _ = tokio::task::spawn_blocking(|| {
-            let _ = update::check_for_update(true); 
-        }).await;
-    }
+    // --- 移除：删除了自动检查更新的逻辑，防止卡顿 ---
 
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
@@ -111,7 +101,6 @@ async fn main() -> Result<()> {
 
         Commands::Project(cmd) => match cmd {
             ProjectCommands::Create { name } => commands::project::handle_create_project(name.clone()).await,
-            // 匹配新增的 List 命令
             ProjectCommands::List { name } => commands::project::handle_list_projects(name.clone()).await,
         },
         Commands::Server(cmd) => match cmd {
@@ -121,10 +110,10 @@ async fn main() -> Result<()> {
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
             println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
+            // Version 命令仍然保留手动检查功能，如果用户主动运行 ops version
             tokio::task::spawn_blocking(|| {
                 if let Ok(Some(v)) = update::check_for_update(false) {
                     println!("Latest version:  {}", v.green());
-                    println!("Run `ops update` to upgrade.");
                 } else {
                     println!("You are on the latest version.");
                 }
