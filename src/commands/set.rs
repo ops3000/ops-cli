@@ -18,7 +18,6 @@ pub async fn handle_set(target_str: String) -> Result<()> {
     let cfg = config::load_config().context("Could not load config. Please log in with `ops login`.")?;
     let token = cfg.token.context("You are not logged in. Please run `ops login` first.")?;
     
-    // 1. 交互式确认
     println!("You are about to bind this server to:");
     println!("  Project:     {}", target.project.cyan().bold());
     println!("  Environment: {}", target.environment.cyan().bold());
@@ -30,8 +29,6 @@ pub async fn handle_set(target_str: String) -> Result<()> {
         return Ok(());
     }
 
-    // 2. 询问是否强制重置密钥 (解决 invalid format 问题)
-    // 默认建议在遇到问题时选择 Yes
     let mut force_reset = false;
     println!();
     println!("{}", "Tip: If you are having trouble with 'ops ssh' (invalid key format), please choose Yes below.".dimmed());
@@ -45,7 +42,7 @@ pub async fn handle_set(target_str: String) -> Result<()> {
 
     println!("Binding server...");
     
-    // 传递 force_reset 参数
+    // 这里传入 5 个参数，需要与 api.rs 定义一致
     let res = api::set_node(&token, &target.project, &target.environment, &pubkey, force_reset).await?;
 
     println!("{}", format!("✔ {}", res.message).green());

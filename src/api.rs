@@ -50,15 +50,13 @@ pub async fn create_project(token: &str, name: &str) -> Result<ProjectResponse> 
     handle_response(res).await
 }
 
-// --- 新增: 获取项目列表 ---
+// 支持 ops project list
 pub async fn list_projects(token: &str, name_filter: Option<&str>) -> Result<ProjectListResponse> {
     let client = Client::new();
     let mut url = format!("{}/projects", BASE_URL);
-    
     if let Some(name) = name_filter {
         url = format!("{}?name={}", url, name);
     }
-
     let res = client.get(&url).bearer_auth(token).send().await?;
     handle_response(res).await
 }
@@ -73,9 +71,15 @@ pub async fn server_whoami(token: Option<&str>) -> Result<ServerWhoamiResponse> 
     handle_response(res).await
 }
 
-pub async fn set_node(token: &str, project: &str, environment: &str, ssh_pub_key: &str) -> Result<NodeSetResponse> {
+// --- 修复重点：参数增加 force_reset ---
+pub async fn set_node(token: &str, project: &str, environment: &str, ssh_pub_key: &str, force_reset: bool) -> Result<NodeSetResponse> {
     let client = Client::new();
-    let body = serde_json::json!({ "project": project, "environment": environment, "ssh_pub_key": ssh_pub_key });
+    let body = serde_json::json!({ 
+        "project": project, 
+        "environment": environment, 
+        "ssh_pub_key": ssh_pub_key,
+        "force_reset": force_reset 
+    });
     let res = client.post(format!("{}/nodes/set", BASE_URL))
         .bearer_auth(token)
         .json(&body)
