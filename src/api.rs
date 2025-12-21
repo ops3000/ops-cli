@@ -1,6 +1,6 @@
 use reqwest::{Client, Response, StatusCode};
 use anyhow::{anyhow, Context, Result};
-use crate::types::{ErrorResponse, LoginResponse, CiKeyResponse, RegisterResponse, WhoamiResponse, ProjectResponse, ServerWhoamiResponse, NodeSetResponse};
+use crate::types::{ErrorResponse, LoginResponse, CiKeyResponse, RegisterResponse, WhoamiResponse, ProjectResponse, ServerWhoamiResponse, NodeSetResponse, ProjectListResponse};
 
 const BASE_URL: &str = "https://api.ops.autos";
 
@@ -18,7 +18,6 @@ async fn handle_response<T: serde::de::DeserializeOwned>(res: Response) -> Resul
     }
 }
 
-// --- FIX HERE: Add `pub` ---
 pub async fn register(username: &str, password: &str) -> Result<RegisterResponse> {
     let client = Client::new();
     let body = serde_json::json!({ "username": username, "password": password });
@@ -26,7 +25,6 @@ pub async fn register(username: &str, password: &str) -> Result<RegisterResponse
     handle_response(res).await
 }
 
-// --- FIX HERE: Add `pub` ---
 pub async fn login(username: &str, password: &str) -> Result<LoginResponse> {
     let client = Client::new();
     let body = serde_json::json!({ "username": username, "password": password });
@@ -34,7 +32,6 @@ pub async fn login(username: &str, password: &str) -> Result<LoginResponse> {
     handle_response(res).await
 }
 
-// --- FIX HERE: Add `pub` ---
 pub async fn whoami(token: &str) -> Result<WhoamiResponse> {
     let client = Client::new();
     let res = client
@@ -50,6 +47,19 @@ pub async fn create_project(token: &str, name: &str) -> Result<ProjectResponse> 
     let body = serde_json::json!({ "name": name });
     let res = client.post(format!("{}/projects", BASE_URL))
         .bearer_auth(token).json(&body).send().await?;
+    handle_response(res).await
+}
+
+// --- 新增: 获取项目列表 ---
+pub async fn list_projects(token: &str, name_filter: Option<&str>) -> Result<ProjectListResponse> {
+    let client = Client::new();
+    let mut url = format!("{}/projects", BASE_URL);
+    
+    if let Some(name) = name_filter {
+        url = format!("{}?name={}", url, name);
+    }
+
+    let res = client.get(&url).bearer_auth(token).send().await?;
     handle_response(res).await
 }
 

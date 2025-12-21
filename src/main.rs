@@ -47,7 +47,6 @@ enum Commands {
         target: String,
     },
     
-    // --- 新增命令 ---
     /// Get the public IP address of a server
     Ip {
         target: String,
@@ -57,7 +56,6 @@ enum Commands {
     Ping {
         target: String,
     },
-    // --- 新增结束 ---
 
     /// Update ops to the latest version
     Update,
@@ -70,6 +68,12 @@ enum Commands {
 enum ProjectCommands {
     /// Create a new project
     Create { name: String },
+
+    /// List all projects and their servers. Optional name to filter.
+    List {
+        /// Optional project name to show only that project
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -102,13 +106,13 @@ async fn main() -> Result<()> {
         Commands::Ssh { target } => commands::ssh::handle_ssh(target.clone()).await,
         Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
 
-        // --- 新增命令的匹配逻辑 ---
         Commands::Ip { target } => commands::ip::handle_ip(target.clone()).await,
         Commands::Ping { target } => commands::ping::handle_ping(target.clone()).await,
-        // --- 新增结束 ---
 
         Commands::Project(cmd) => match cmd {
             ProjectCommands::Create { name } => commands::project::handle_create_project(name.clone()).await,
+            // 匹配新增的 List 命令
+            ProjectCommands::List { name } => commands::project::handle_list_projects(name.clone()).await,
         },
         Commands::Server(cmd) => match cmd {
             ServerCommands::Whoami => commands::server::handle_server_whoami().await,

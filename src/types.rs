@@ -34,7 +34,6 @@ pub struct WhoamiResponse {
     pub token_expires_at: String,
 }
 
-// 新增
 #[derive(Deserialize, Debug)]
 pub struct ProjectResponse {
     pub message: String,
@@ -49,4 +48,24 @@ pub struct ServerWhoamiResponse {
     pub owner: Option<String>,
     pub permission: Option<String>,
     pub message: Option<String>,
+}
+
+// --- 新增：项目列表相关的结构体 ---
+
+#[derive(Deserialize, Debug)]
+pub struct NodeItem {
+    pub environment: String,
+    pub ip_address: String,
+    pub domain: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ProjectItem {
+    pub name: String,
+    pub nodes: Vec<NodeItem>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ProjectListResponse {
+    pub projects: Vec<ProjectItem>,
 }
