@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use anyhow::{Context, Result};
+use std::env; // 引入 env
 
 const CONFIG_DIR: &str = "ops";
 const CONFIG_FILE: &str = "credentials.json";
@@ -28,6 +29,14 @@ pub fn save_config(config: &Config) -> Result<()> {
 }
 
 pub fn load_config() -> Result<Config> {
+    // 1. 优先检查环境变量
+    if let Ok(token) = env::var("OPS_TOKEN") {
+        if !token.is_empty() {
+            return Ok(Config { token: Some(token) });
+        }
+    }
+
+    // 2. 其次读取文件
     let path = get_config_path()?;
     if !path.exists() {
         return Ok(Config::default());

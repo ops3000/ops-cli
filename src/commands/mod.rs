@@ -10,4 +10,5 @@ pub mod update;
 pub mod ip;
 pub mod ping;
 pub mod scp;
-pub mod token; // 新增
+pub mod token;
+pub mod logout; // 新增

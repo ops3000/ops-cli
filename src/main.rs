@@ -22,6 +22,7 @@ struct Cli {
 enum Commands {
     Register,
     Login,
+    Logout, // 新增
     Whoami,
     
     /// Bind this server (format: environment.project)
@@ -99,6 +100,7 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,
+        Commands::Logout => commands::logout::handle_logout().await, // 新增
         Commands::Whoami => commands::whoami::handle_whoami().await,
         
         Commands::Set { target } => commands::set::handle_set(target.clone()).await,
