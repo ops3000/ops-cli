@@ -9,4 +9,5 @@ pub mod whoami;
 pub mod update;
 pub mod ip;
 pub mod ping;
-pub mod scp; // 新增
+pub mod scp;
+pub mod token; // 新增

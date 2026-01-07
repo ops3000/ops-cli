@@ -29,9 +29,11 @@ enum Commands {
         target: String,
     },
 
-    /// SSH into a server (format: environment.project)
+    /// SSH into a server or execute a command (format: environment.project)
     Ssh {
         target: String,
+        /// (Optional) Command to execute on the remote server
+        command: Option<String>,
     },
 
     /// Push a file or directory to the server (format: source environment.project[:/remote/path])
@@ -39,6 +41,9 @@ enum Commands {
         source: String,
         target: String,
     },
+
+    /// Print the current session token to stdout
+    Token,
 
     /// Manage projects
     #[command(subcommand)]
@@ -97,10 +102,10 @@ async fn main() -> Result<()> {
         Commands::Whoami => commands::whoami::handle_whoami().await,
         
         Commands::Set { target } => commands::set::handle_set(target.clone()).await,
-        Commands::Ssh { target } => commands::ssh::handle_ssh(target.clone()).await,
-        
-        // 新增 Push 命令处理
+        Commands::Ssh { target, command } => commands::ssh::handle_ssh(target.clone(), command.clone()).await,
         Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
+
+        Commands::Token => commands::token::handle_get_token().await,
 
         Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
 
