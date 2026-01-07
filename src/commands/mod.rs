@@ -7,5 +7,6 @@ pub mod set;
 pub mod ssh;
 pub mod whoami;
 pub mod update;
-pub mod ip; // 新增
-pub mod ping; // 新增
+pub mod ip;
+pub mod ping;
+pub mod scp; // 新增

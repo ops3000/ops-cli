@@ -34,6 +34,12 @@ enum Commands {
         target: String,
     },
 
+    /// Push a file or directory to the server (format: source environment.project[:/remote/path])
+    Push {
+        source: String,
+        target: String,
+    },
+
     /// Manage projects
     #[command(subcommand)]
     Project(ProjectCommands),
@@ -85,8 +91,6 @@ enum ServerCommands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    // --- 移除：删除了自动检查更新的逻辑，防止卡顿 ---
-
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,
@@ -94,6 +98,10 @@ async fn main() -> Result<()> {
         
         Commands::Set { target } => commands::set::handle_set(target.clone()).await,
         Commands::Ssh { target } => commands::ssh::handle_ssh(target.clone()).await,
+        
+        // 新增 Push 命令处理
+        Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
+
         Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
 
         Commands::Ip { target } => commands::ip::handle_ip(target.clone()).await,
@@ -110,7 +118,6 @@ async fn main() -> Result<()> {
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
             println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
-            // Version 命令仍然保留手动检查功能，如果用户主动运行 ops version
             tokio::task::spawn_blocking(|| {
                 if let Ok(Some(v)) = update::check_for_update(false) {
                     println!("Latest version:  {}", v.green());
