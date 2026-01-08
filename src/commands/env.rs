@@ -1,5 +1,6 @@
 // src/commands/env.rs
-use crate::{config, ssh, utils};
+use crate::{config, utils};
+use crate::commands::ssh::{execute_remote_command, execute_remote_command_with_output}; // 核心修复：导入函数
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
@@ -21,8 +22,8 @@ pub async fn handle_upload(target_str: String) -> Result<()> {
     let remote_path = format!("/opt/judge/.env");
     let command = format!("sudo tee {}", remote_path);
 
-    // 使用 ssh 模块的通用函数执行
-    ssh::execute_remote_command(&target_str, &command, Some(&content)).await?;
+    // 核心修复：直接调用导入的函数
+    execute_remote_command(&target_str, &command, Some(&content)).await?;
 
     println!("{}", "✔ .env file uploaded successfully.".green());
     Ok(())
@@ -35,8 +36,8 @@ pub async fn handle_download(target_str: String) -> Result<()> {
     let remote_path = format!("/opt/judge/.env");
     let command = format!("sudo cat {}", remote_path);
 
-    // 使用 ssh 模块的通用函数执行并捕获输出
-    let output = ssh::execute_remote_command_with_output(&target_str, &command).await?;
+    // 核心修复：直接调用导入的函数
+    let output = execute_remote_command_with_output(&target_str, &command).await?;
     
     fs::write("./.env", &output).context("Failed to write to local .env file")?;
 
