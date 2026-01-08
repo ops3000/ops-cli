@@ -22,7 +22,7 @@ struct Cli {
 enum Commands {
     Register,
     Login,
-    Logout, // 新增
+    Logout,
     Whoami,
     
     /// Bind this server (format: environment.project)
@@ -45,6 +45,10 @@ enum Commands {
 
     /// Print the current session token to stdout
     Token,
+    
+    /// Manage environment variables for a target
+    #[command(subcommand)]
+    Env(EnvCommands),
 
     /// Manage projects
     #[command(subcommand)]
@@ -77,6 +81,14 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum EnvCommands {
+    /// Upload local .env file to the target server
+    Upload { target: String },
+    /// Download .env file from the target server
+    Download { target: String },
+}
+
+#[derive(Subcommand)]
 enum ProjectCommands {
     /// Create a new project
     Create { name: String },
@@ -100,7 +112,7 @@ async fn main() -> Result<()> {
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,
-        Commands::Logout => commands::logout::handle_logout().await, // 新增
+        Commands::Logout => commands::logout::handle_logout().await,
         Commands::Whoami => commands::whoami::handle_whoami().await,
         
         Commands::Set { target } => commands::set::handle_set(target.clone()).await,
@@ -108,6 +120,11 @@ async fn main() -> Result<()> {
         Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
 
         Commands::Token => commands::token::handle_get_token().await,
+
+        Commands::Env(cmd) => match cmd {
+            EnvCommands::Upload { target } => commands::env::handle_upload(target.clone()).await,
+            EnvCommands::Download { target } => commands::env::handle_download(target.clone()).await,
+        },
 
         Commands::CiKeys { target } => commands::ci_key::handle_get_ci_private_key(target.clone()).await,
 
