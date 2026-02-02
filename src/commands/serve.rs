@@ -75,7 +75,7 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
     Ok(())
 }
 
-pub async fn handle_install(token: String, port: u16, compose_dir: String) -> Result<()> {
+pub async fn handle_install(token: String, port: u16, compose_dir: String, domain: Option<String>) -> Result<()> {
     let exe_path = std::env::current_exe()?;
     let service = format!(
         r#"[Unit]
@@ -106,7 +106,7 @@ WantedBy=multi-user.target
     let cmds = [
         ("systemctl daemon-reload", "Reloaded systemd"),
         ("systemctl enable ops-serve", "Enabled ops-serve"),
-        ("systemctl start ops-serve", "Started ops-serve"),
+        ("systemctl restart ops-serve", "Restarted ops-serve"),
     ];
 
     for (cmd, msg) in &cmds {
@@ -118,6 +118,59 @@ WantedBy=multi-user.target
         } else {
             eprintln!("{} Failed: {}", "✗".red(), cmd);
         }
+    }
+
+    // Configure nginx reverse proxy if domain is provided
+    if let Some(domain) = domain {
+        let nginx_conf = format!(
+            r#"server {{
+    listen 80;
+    server_name {domain};
+
+    location / {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }}
+}}"#
+        );
+
+        // Try sites-enabled first, fall back to conf.d
+        let nginx_path = if std::path::Path::new("/etc/nginx/sites-enabled").exists() {
+            "/etc/nginx/sites-enabled/ops-serve.conf"
+        } else {
+            "/etc/nginx/conf.d/ops-serve.conf"
+        };
+
+        std::fs::write(nginx_path, &nginx_conf)?;
+        println!("{} Wrote {}", "✓".green(), nginx_path);
+
+        let nginx_cmds = [
+            ("nginx -t", "Nginx config test passed"),
+            ("systemctl reload nginx", "Reloaded nginx"),
+        ];
+
+        for (cmd, msg) in &nginx_cmds {
+            let status = std::process::Command::new("sh")
+                .args(["-c", cmd])
+                .status()?;
+            if status.success() {
+                println!("{} {}", "✓".green(), msg);
+            } else {
+                eprintln!("{} Failed: {}", "✗".red(), cmd);
+            }
+        }
+
+        println!(
+            "\n{} Next: Add a Cloudflare DNS A record for {} pointing to this server's IP",
+            "→".cyan(),
+            domain.cyan()
+        );
     }
 
     Ok(())

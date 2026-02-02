@@ -120,9 +120,12 @@ enum Commands {
         /// Docker Compose project directory
         #[arg(long)]
         compose_dir: String,
-        /// Install as systemd service instead of running
+        /// Install as systemd service and configure nginx reverse proxy
         #[arg(long)]
         install: bool,
+        /// Domain for nginx reverse proxy (e.g. api.RedQ.ops.autos)
+        #[arg(long)]
+        domain: Option<String>,
     },
 
     /// Update ops to the latest version
@@ -198,9 +201,9 @@ async fn main() -> Result<()> {
         Commands::Logs { service, file, tail, follow } =>
             commands::logs::handle_logs(file.clone(), service.clone(), *tail, *follow).await,
 
-        Commands::Serve { token, port, compose_dir, install } => {
+        Commands::Serve { token, port, compose_dir, install, domain } => {
             if *install {
-                commands::serve::handle_install(token.clone(), *port, compose_dir.clone()).await
+                commands::serve::handle_install(token.clone(), *port, compose_dir.clone(), domain.clone()).await
             } else {
                 commands::serve::handle_serve(token.clone(), *port, compose_dir.clone()).await
             }
