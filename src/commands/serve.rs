@@ -122,10 +122,36 @@ WantedBy=multi-user.target
 
     // Configure nginx reverse proxy if domain is provided
     if let Some(domain) = domain {
+        // Generate self-signed certificate for Cloudflare Full SSL mode
+        let cert_dir = "/etc/nginx/ssl";
+        let cert_path = format!("{}/ops-serve.crt", cert_dir);
+        let key_path = format!("{}/ops-serve.key", cert_dir);
+
+        if !std::path::Path::new(&cert_path).exists() {
+            std::fs::create_dir_all(cert_dir)?;
+            let ssl_cmd = format!(
+                "openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                 -keyout {} -out {} -subj '/CN=ops-serve'",
+                key_path, cert_path
+            );
+            let status = std::process::Command::new("sh")
+                .args(["-c", &ssl_cmd])
+                .status()?;
+            if status.success() {
+                println!("{} Generated self-signed SSL certificate", "✓".green());
+            } else {
+                eprintln!("{} Failed to generate SSL certificate", "✗".red());
+            }
+        }
+
         let nginx_conf = format!(
             r#"server {{
     listen 80;
+    listen 443 ssl;
     server_name {domain};
+
+    ssl_certificate {cert_path};
+    ssl_certificate_key {key_path};
 
     location / {{
         proxy_pass http://127.0.0.1:{port};
@@ -165,12 +191,6 @@ WantedBy=multi-user.target
                 eprintln!("{} Failed: {}", "✗".red(), cmd);
             }
         }
-
-        println!(
-            "\n{} Next: Add a Cloudflare DNS A record for {} pointing to this server's IP",
-            "→".cyan(),
-            domain.cyan()
-        );
     }
 
     Ok(())
