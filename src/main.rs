@@ -5,6 +5,7 @@ use colored::Colorize;
 mod api;
 mod commands;
 mod config;
+mod serve;
 mod ssh;
 mod types;
 mod utils;
@@ -73,9 +74,60 @@ enum Commands {
         target: String,
     },
 
+    /// Deploy services defined in ops.toml
+    Deploy {
+        /// Path to ops.toml config file
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+        /// Deploy only a specific service
+        #[arg(long)]
+        service: Option<String>,
+        /// Skip build, only restart containers
+        #[arg(long)]
+        restart_only: bool,
+    },
+
+    /// Show status of deployed services (reads ops.toml)
+    Status {
+        /// Path to ops.toml
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+    },
+
+    /// View logs of a deployed service (reads ops.toml)
+    Logs {
+        /// Service name (e.g. jug0, juglans-api)
+        service: String,
+        /// Path to ops.toml
+        #[arg(long, default_value = "ops.toml")]
+        file: String,
+        /// Number of lines to show
+        #[arg(short = 'n', long, default_value = "100")]
+        tail: u32,
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
+
+    /// Start HTTP server exposing container status, logs, metrics
+    Serve {
+        /// Bearer token for authentication
+        #[arg(long)]
+        token: String,
+        /// Port to listen on
+        #[arg(long, default_value = "8377")]
+        port: u16,
+        /// Docker Compose project directory
+        #[arg(long)]
+        compose_dir: String,
+        /// Install as systemd service instead of running
+        #[arg(long)]
+        install: bool,
+    },
+
     /// Update ops to the latest version
     Update,
-    
+
     /// Check current version info
     Version,
 }
@@ -139,6 +191,21 @@ async fn main() -> Result<()> {
             ServerCommands::Whoami => commands::server::handle_server_whoami().await,
         },
         
+        Commands::Deploy { file, service, restart_only } =>
+            commands::deploy::handle_deploy(file.clone(), service.clone(), *restart_only).await,
+        Commands::Status { file } =>
+            commands::status::handle_status(file.clone()).await,
+        Commands::Logs { service, file, tail, follow } =>
+            commands::logs::handle_logs(file.clone(), service.clone(), *tail, *follow).await,
+
+        Commands::Serve { token, port, compose_dir, install } => {
+            if *install {
+                commands::serve::handle_install(token.clone(), *port, compose_dir.clone()).await
+            } else {
+                commands::serve::handle_serve(token.clone(), *port, compose_dir.clone()).await
+            }
+        },
+
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
             println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());

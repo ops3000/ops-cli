@@ -69,3 +69,65 @@ pub struct ProjectItem {
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectItem>,
 }
+
+// ===== ops.toml 配置结构 =====
+
+fn default_source() -> String { "git".into() }
+
+#[derive(Deserialize, Debug)]
+pub struct OpsToml {
+    pub app: String,
+    pub target: String,
+    pub deploy_path: String,
+    pub deploy: DeployConfig,
+    #[serde(default)]
+    pub env_files: Vec<EnvFileMapping>,
+    #[serde(default)]
+    pub sync: Vec<SyncMapping>,
+    #[serde(default)]
+    pub routes: Vec<RouteDef>,
+    #[serde(default)]
+    pub healthchecks: Vec<HealthCheck>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct DeployConfig {
+    #[serde(default = "default_source")]
+    pub source: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub git: Option<GitConfig>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct GitConfig {
+    pub repo: String,
+    pub ssh_key: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EnvFileMapping {
+    pub local: String,
+    pub remote: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SyncMapping {
+    pub local: String,
+    pub remote: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct RouteDef {
+    pub domain: String,
+    pub port: u16,
+    #[serde(default)]
+    pub ssl: bool,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct HealthCheck {
+    pub name: String,
+    pub url: String,
+}

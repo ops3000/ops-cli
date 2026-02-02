@@ -12,4 +12,8 @@ pub mod ping;
 pub mod scp;
 pub mod token;
 pub mod logout;
-pub mod env; // 新增
+pub mod env;
+pub mod deploy;
+pub mod status;
+pub mod logs;
+pub mod serve;
