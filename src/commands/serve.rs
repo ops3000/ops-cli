@@ -22,7 +22,7 @@ use crate::serve::{actions, containers, logs, metrics};
 #[derive(Clone)]
 struct AppState {
     token: String,
-    compose_dir: String,
+    compose_dirs: Vec<String>,
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -39,14 +39,16 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 
 pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Result<()> {
-    // Verify compose dir exists
-    if !std::path::Path::new(&compose_dir).exists() {
-        anyhow::bail!("Compose directory does not exist: {}", compose_dir);
+    let compose_dirs: Vec<String> = compose_dir.split(',').map(|s| s.trim().to_string()).collect();
+    for dir in &compose_dirs {
+        if !std::path::Path::new(dir).exists() {
+            anyhow::bail!("Compose directory does not exist: {}", dir);
+        }
     }
 
     let state = Arc::new(AppState {
         token,
-        compose_dir,
+        compose_dirs,
     });
 
     let app = Router::new()
@@ -207,13 +209,14 @@ async fn get_containers(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match containers::list_containers(&state.compose_dir) {
-        Ok(list) => Ok(Json(serde_json::json!({ "containers": list }))),
-        Err(e) => {
-            eprintln!("containers error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    let mut all = Vec::new();
+    for dir in &state.compose_dirs {
+        match containers::list_containers(dir) {
+            Ok(list) => all.extend(list),
+            Err(e) => eprintln!("containers error for {}: {}", dir, e),
         }
     }
+    Ok(Json(serde_json::json!({ "containers": all })))
 }
 
 #[derive(Deserialize)]
@@ -233,13 +236,31 @@ async fn get_logs(
     Query(q): Query<LogsQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match logs::get_logs(&state.compose_dir, &q.service, q.lines) {
-        Ok(output) => Ok(Json(serde_json::json!({ "logs": output }))),
-        Err(e) => {
-            eprintln!("logs error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    // Try each compose dir; for "all", merge from all dirs
+    if q.service == "all" {
+        let mut combined = String::new();
+        for dir in &state.compose_dirs {
+            if let Ok(output) = logs::get_logs(dir, "all", q.lines) {
+                combined.push_str(&output);
+            }
+        }
+        return Ok(Json(serde_json::json!({ "logs": combined })));
+    }
+    // For specific service, find which dir contains it
+    for dir in &state.compose_dirs {
+        if let Ok(services) = containers::list_services(dir) {
+            if services.iter().any(|s| s == &q.service) {
+                match logs::get_logs(dir, &q.service, q.lines) {
+                    Ok(output) => return Ok(Json(serde_json::json!({ "logs": output }))),
+                    Err(e) => {
+                        eprintln!("logs error: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
+            }
         }
     }
+    Err(StatusCode::NOT_FOUND)
 }
 
 #[derive(Deserialize)]
@@ -255,11 +276,26 @@ async fn stream_logs(
     check_auth(&state, &headers)?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(256);
-    let compose_dir = state.compose_dir.clone();
     let service = q.service.clone();
 
+    // Find which dir contains this service, or use first dir for "all"
+    let target_dir = if service == "all" {
+        state.compose_dirs[0].clone()
+    } else {
+        let mut found = None;
+        for dir in &state.compose_dirs {
+            if let Ok(services) = containers::list_services(dir) {
+                if services.iter().any(|s| s == &service) {
+                    found = Some(dir.clone());
+                    break;
+                }
+            }
+        }
+        found.unwrap_or_else(|| state.compose_dirs[0].clone())
+    };
+
     tokio::spawn(async move {
-        if let Err(e) = logs::stream_logs(&compose_dir, &service, tx).await {
+        if let Err(e) = logs::stream_logs(&target_dir, &service, tx).await {
             eprintln!("stream_logs error: {}", e);
         }
     });
@@ -288,18 +324,27 @@ struct ServiceQuery {
     service: String,
 }
 
+fn find_compose_dir(state: &AppState, service: &str) -> Option<String> {
+    for dir in &state.compose_dirs {
+        if let Ok(services) = containers::list_services(dir) {
+            if services.iter().any(|s| s == service) {
+                return Some(dir.clone());
+            }
+        }
+    }
+    None
+}
+
 async fn restart(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(q): Query<ServiceQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match actions::restart_service(&state.compose_dir, &q.service) {
+    let dir = find_compose_dir(&state, &q.service).ok_or(StatusCode::NOT_FOUND)?;
+    match actions::restart_service(&dir, &q.service) {
         Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
-        Err(e) => {
-            eprintln!("restart error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(e) => { eprintln!("restart error: {}", e); Err(StatusCode::INTERNAL_SERVER_ERROR) }
     }
 }
 
@@ -309,12 +354,10 @@ async fn stop(
     Query(q): Query<ServiceQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match actions::stop_service(&state.compose_dir, &q.service) {
+    let dir = find_compose_dir(&state, &q.service).ok_or(StatusCode::NOT_FOUND)?;
+    match actions::stop_service(&dir, &q.service) {
         Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
-        Err(e) => {
-            eprintln!("stop error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(e) => { eprintln!("stop error: {}", e); Err(StatusCode::INTERNAL_SERVER_ERROR) }
     }
 }
 
@@ -324,12 +367,10 @@ async fn start(
     Query(q): Query<ServiceQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match actions::start_service(&state.compose_dir, &q.service) {
+    let dir = find_compose_dir(&state, &q.service).ok_or(StatusCode::NOT_FOUND)?;
+    match actions::start_service(&dir, &q.service) {
         Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
-        Err(e) => {
-            eprintln!("start error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(e) => { eprintln!("start error: {}", e); Err(StatusCode::INTERNAL_SERVER_ERROR) }
     }
 }
 
@@ -338,11 +379,17 @@ async fn deploy(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
-    match actions::deploy(&state.compose_dir) {
-        Ok(r) => Ok(Json(serde_json::to_value(r).unwrap())),
-        Err(e) => {
-            eprintln!("deploy error: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    let mut results = Vec::new();
+    for dir in &state.compose_dirs {
+        match actions::deploy(dir) {
+            Ok(r) => results.push(r),
+            Err(e) => { eprintln!("deploy error for {}: {}", dir, e); }
         }
     }
+    let all_ok = results.iter().all(|r| r.success);
+    let messages: Vec<&str> = results.iter().map(|r| r.message.as_str()).collect();
+    Ok(Json(serde_json::json!({
+        "success": all_ok,
+        "message": messages.join("; ")
+    })))
 }

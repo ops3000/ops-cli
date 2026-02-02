@@ -4,8 +4,13 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 pub fn get_logs(compose_dir: &str, service: &str, lines: u32) -> Result<String> {
+    let lines_str = lines.to_string();
+    let mut args = vec!["compose", "logs", "--tail", &lines_str, "--no-color"];
+    if service != "all" {
+        args.push(service);
+    }
     let output = Command::new("docker")
-        .args(["compose", "logs", "--tail", &lines.to_string(), "--no-color", service])
+        .args(&args)
         .current_dir(compose_dir)
         .output()?;
 
@@ -22,8 +27,12 @@ pub async fn stream_logs(
     service: &str,
     sender: tokio::sync::mpsc::Sender<String>,
 ) -> Result<()> {
+    let mut args = vec!["compose", "logs", "-f", "--tail", "50", "--no-color"];
+    if service != "all" {
+        args.push(service);
+    }
     let mut child = TokioCommand::new("docker")
-        .args(["compose", "logs", "-f", "--tail", "50", "--no-color", service])
+        .args(&args)
         .current_dir(compose_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
