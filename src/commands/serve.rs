@@ -62,6 +62,7 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
         .route("/stop", post(stop))
         .route("/start", post(start))
         .route("/deploy", post(deploy))
+        .route("/checkupdate", get(check_update))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -441,5 +442,27 @@ async fn deploy(
     Ok(Json(serde_json::json!({
         "success": all_ok,
         "message": messages.join("; ")
+    })))
+}
+
+async fn check_update(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, StatusCode> {
+    check_auth(&state, &headers)?;
+
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let latest = tokio::task::spawn_blocking(|| update::check_for_update(false))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .flatten();
+
+    let update_available = latest.as_ref().map(|v| v != &current).unwrap_or(false);
+
+    Ok(Json(serde_json::json!({
+        "current_version": current,
+        "latest_version": latest,
+        "update_available": update_available
     })))
 }
