@@ -1,8 +1,8 @@
-use crate::{api, config};
+use crate::{api, config, ssh};
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::io::{self, Write};
 use std::process::Command;
-use std::io::{BufRead, BufReader};
 use std::fs;
 use std::path::Path;
 
@@ -11,7 +11,6 @@ fn get_ssh_public_key() -> Result<String> {
     let home = std::env::var("HOME").context("Could not find HOME directory")?;
     let ssh_dir = Path::new(&home).join(".ssh");
 
-    // Try common key types in order of preference
     let key_files = ["id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"];
 
     for key_file in &key_files {
@@ -28,19 +27,102 @@ fn get_ssh_public_key() -> Result<String> {
     ))
 }
 
+/// Check and clean up old version residue files
+fn cleanup_old_residue() -> Result<bool> {
+    let mut found_residue = false;
+    let mut cleaned = Vec::new();
+
+    // 1. Check systemd service file
+    let service_path = Path::new("/etc/systemd/system/ops-serve.service");
+    if service_path.exists() {
+        found_residue = true;
+        // Stop and disable service first
+        let _ = Command::new("systemctl").args(["stop", "ops-serve"]).status();
+        let _ = Command::new("systemctl").args(["disable", "ops-serve"]).status();
+        if fs::remove_file(service_path).is_ok() {
+            cleaned.push(service_path.to_string_lossy().to_string());
+        }
+        let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+    }
+
+    // 2. Check nginx configs for *.node.ops.autos
+    let nginx_available = Path::new("/etc/nginx/sites-available");
+    let nginx_enabled = Path::new("/etc/nginx/sites-enabled");
+
+    if nginx_available.exists() {
+        if let Ok(entries) = fs::read_dir(nginx_available) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".node.ops.autos") {
+                    found_residue = true;
+                    let available_path = nginx_available.join(&name);
+                    let enabled_path = nginx_enabled.join(&name);
+
+                    if fs::remove_file(&enabled_path).is_ok() {
+                        cleaned.push(enabled_path.to_string_lossy().to_string());
+                    }
+                    if fs::remove_file(&available_path).is_ok() {
+                        cleaned.push(available_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check for old SSL certs
+    let cert_paths = [
+        "/etc/ssl/certs/ops-serve.crt",
+        "/etc/ssl/private/ops-serve.key",
+    ];
+    for cert_path in &cert_paths {
+        let path = Path::new(cert_path);
+        if path.exists() {
+            found_residue = true;
+            if fs::remove_file(path).is_ok() {
+                cleaned.push(cert_path.to_string());
+            }
+        }
+    }
+
+    if found_residue {
+        println!("{}", "Found old OPS configuration, cleaning up...".yellow());
+        for path in &cleaned {
+            println!("  Removed: {}", path.dimmed());
+        }
+        if !cleaned.is_empty() {
+            println!("{}", "✔ Old configuration cleaned".green());
+        }
+        // Reload nginx if we modified its config
+        if cleaned.iter().any(|p| p.contains("nginx")) {
+            let _ = Command::new("systemctl").args(["reload", "nginx"]).status();
+        }
+    }
+
+    Ok(found_residue)
+}
+
+/// Prompt user for yes/no confirmation
+fn confirm(prompt: &str) -> bool {
+    print!("{} [y/N]: ", prompt);
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
 /// Configure and start ops serve as a systemd service
-async fn configure_serve_daemon(
+fn configure_serve_daemon(
     token: &str,
     port: u16,
     node_id: u64,
-    compose_dir: Option<&str>,
+    compose_dir: &str,
 ) -> Result<()> {
     let domain = format!("{}.node.ops.autos", node_id);
-    let compose_directory = compose_dir.unwrap_or("/root");
 
-    println!("Configuring ops serve daemon...");
+    println!("Configuring systemd service...");
 
-    // Create systemd service file
     let service_content = format!(r#"[Unit]
 Description=OPS Serve - Node {}
 After=network.target docker.service
@@ -55,15 +137,14 @@ Environment=RUST_LOG=info
 
 [Install]
 WantedBy=multi-user.target
-"#, node_id, token, port, compose_directory);
+"#, node_id, token, port, compose_dir);
 
     let service_path = "/etc/systemd/system/ops-serve.service";
 
     // Check if running as root
     if std::env::var("USER").unwrap_or_default() != "root" {
         println!("{}", "Warning: Not running as root. Cannot install systemd service.".yellow());
-        println!("To install manually, create {}:", service_path);
-        println!("{}", service_content.dimmed());
+        println!("Run with sudo or as root to enable auto-start.");
         return Ok(());
     }
 
@@ -74,7 +155,7 @@ WantedBy=multi-user.target
     let commands = [
         ("systemctl", vec!["daemon-reload"]),
         ("systemctl", vec!["enable", "ops-serve"]),
-        ("systemctl", vec!["start", "ops-serve"]),
+        ("systemctl", vec!["restart", "ops-serve"]),
     ];
 
     for (cmd, args) in &commands {
@@ -88,7 +169,7 @@ WantedBy=multi-user.target
         }
     }
 
-    println!("{}", "✔ ops serve daemon installed and started".green());
+    println!("{}", "✔ ops-serve daemon installed and started".green());
 
     // Configure nginx if available
     if Path::new("/etc/nginx").exists() {
@@ -119,13 +200,11 @@ fn configure_nginx(domain: &str, port: u16) -> Result<()> {
     fs::write(&config_path, &nginx_config)
         .context("Failed to write nginx config")?;
 
-    // Create symlink if not exists
     if !Path::new(&enabled_path).exists() {
         std::os::unix::fs::symlink(&config_path, &enabled_path)
             .context("Failed to enable nginx site")?;
     }
 
-    // Test and reload nginx
     let test = Command::new("nginx")
         .arg("-t")
         .status()
@@ -147,69 +226,68 @@ fn configure_nginx(domain: &str, port: u16) -> Result<()> {
 /// Handle `ops init` command
 /// Initializes this server as a node in the OPS platform
 pub async fn handle_init(
-    daemon: bool,
-    projects: Option<String>,
-    apps: Option<String>,
+    _daemon: bool,
+    _projects: Option<String>,
+    _apps: Option<String>,
     region: Option<String>,
     port: u16,
     hostname: Option<String>,
     compose_dir: Option<String>,
 ) -> Result<()> {
+    println!();
+    println!("{}", "OPS Node Initialization".cyan().bold());
+    println!("{}", "═══════════════════════".cyan());
+    println!();
+
     // 1. Check if logged in
     let cfg = config::load_config()
-        .context("Could not load config. Please log in with `ops login` first.")?;
+        .context("Not logged in. Run `ops login` first.")?;
     let token = cfg.token
-        .context("You are not logged in. Please run `ops login` first.")?;
+        .context("Not logged in. Run `ops login` first.")?;
+    println!("{}", "✔ Logged in".green());
 
-    // 2. Get SSH public key
-    println!("Reading SSH public key...");
+    // 2. Check and clean up old residue
+    cleanup_old_residue()?;
+
+    // 3. Get SSH public key
     let ssh_pub_key = get_ssh_public_key()?;
     println!("{}", "✔ SSH public key found".green());
 
-    // 3. Parse allowed projects and apps
-    let allowed_projects: Option<Vec<String>> = projects
-        .map(|p| p.split(',').map(|s| s.trim().to_string()).collect());
-    let allowed_apps: Option<Vec<String>> = apps
-        .map(|a| a.split(',').map(|s| s.trim().to_string()).collect());
+    // 4. Try to initialize node
+    println!("Registering node...");
 
-    // 4. Initialize node
-    println!("Initializing node...");
-    if let Some(ref r) = region {
-        println!("  Region: {}", r.cyan());
-    }
-    if let Some(ref p) = allowed_projects {
-        println!("  Allowed projects: {}", p.join(", ").cyan());
-    }
-    if let Some(ref a) = allowed_apps {
-        println!("  Allowed apps: {}", a.join(", ").cyan());
-    }
-    println!("  Serve port: {}", port.to_string().cyan());
-
-    // Try init first, fall back to reinit if node already exists
     let res = match api::init_node(
         &token,
         &ssh_pub_key,
         region.as_deref(),
-        allowed_projects.clone(),
-        allowed_apps.clone(),
+        None,
+        None,
         Some(port),
         hostname.as_deref(),
     ).await {
         Ok(r) => r,
         Err(e) => {
             let err_msg = e.to_string();
-            // If node already exists, try reinit instead
+            // If IP already registered, ask user if they want to overwrite
             if err_msg.contains("already registered") {
-                println!("{}", "Node already exists, re-initializing...".yellow());
-                api::reinit_node(
-                    &token,
-                    &ssh_pub_key,
-                    region.as_deref(),
-                    allowed_projects,
-                    allowed_apps,
-                    Some(port),
-                    hostname.as_deref(),
-                ).await?
+                // Extract existing node ID from error message if available
+                println!();
+                println!("{}", "This server is already registered as a node.".yellow());
+
+                if confirm("Overwrite existing configuration?") {
+                    api::reinit_node(
+                        &token,
+                        &ssh_pub_key,
+                        region.as_deref(),
+                        None,
+                        None,
+                        Some(port),
+                        hostname.as_deref(),
+                    ).await?
+                } else {
+                    println!("Aborted.");
+                    return Ok(());
+                }
             } else {
                 return Err(e);
             }
@@ -217,41 +295,42 @@ pub async fn handle_init(
     };
 
     println!();
-    println!("{}", "✔ Node initialized successfully!".green().bold());
+    println!("{}", "✔ Node registered".green().bold());
     println!();
-    println!("Node Details:");
-    println!("  ID:          {}", res.node_id.to_string().cyan().bold());
-    println!("  Domain:      {}", res.domain.cyan());
-    println!("  IP Address:  {}", res.ip_address);
-    println!("  Serve Port:  {}", res.serve_port);
-    if let Some(r) = res.region {
-        println!("  Region:      {}", r);
+    println!("  Node ID:  {}", res.node_id.to_string().cyan().bold());
+    println!("  Domain:   {}", res.domain.cyan());
+    println!("  IP:       {}", res.ip_address);
+    if let Some(r) = &res.region {
+        println!("  Region:   {}", r);
     }
 
-    // 5. Configure serve daemon if requested
-    if daemon {
-        println!();
-        configure_serve_daemon(
-            &res.serve_token,
-            res.serve_port,
-            res.node_id as u64,
-            compose_dir.as_deref(),
-        ).await?;
-    }
-
-    // 6. Print CI key info
+    // 5. Add CI public key to authorized_keys
     println!();
-    println!("{}", "CI Key (add to remote authorized_keys):".yellow());
-    println!("{}", res.ci_ssh_public_key.dimmed());
+    println!("Configuring SSH access...");
+    ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
+    println!("{}", "✔ CI key added to authorized_keys".green());
 
-    // 7. Print next steps
+    // 6. Configure systemd daemon (always)
     println!();
-    println!("{}", "Next steps:".yellow());
-    println!("  1. Add the CI key above to ~/.ssh/authorized_keys on this server");
-    println!("  2. Bind this node to an app:");
-    println!("     ops set api.MyProject --node {}", res.node_id);
-    println!("  3. Or use directly:");
-    println!("     ops ssh {}", res.node_id);
+    let compose_directory = compose_dir.as_deref().unwrap_or("/root");
+    configure_serve_daemon(
+        &res.serve_token,
+        res.serve_port,
+        res.node_id as u64,
+        compose_directory,
+    )?;
+
+    // Done
+    println!();
+    println!("{}", "═══════════════════════════════════════════".green());
+    println!("{}", "  Node initialization complete!".green().bold());
+    println!("{}", "═══════════════════════════════════════════".green());
+    println!();
+    println!("Access this server remotely:");
+    println!("  {}", format!("ops ssh {}", res.node_id).cyan());
+    println!();
+    println!("Bind to an app:");
+    println!("  {}", format!("ops set api.MyProject --node {}", res.node_id).cyan());
 
     Ok(())
 }
