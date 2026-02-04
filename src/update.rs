@@ -117,3 +117,76 @@ pub fn update_self() -> Result<()> {
 
     Ok(())
 }
+
+/// Check for updates and auto-update if available.
+/// Returns Ok(true) if updated (caller should exit and re-run).
+/// Silently returns Ok(false) on network errors.
+pub fn check_and_auto_update() -> Result<bool> {
+    let current_version = cargo_crate_version!();
+
+    // Silently skip if network fails
+    let release = match fetch_latest_release() {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+
+    let current = match semver::Version::parse(current_version) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    let latest = match semver::Version::parse(&release.version) {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+
+    if latest > current {
+        println!(
+            "{}",
+            format!("🔄 Updating ops {} → {}...", current, latest).yellow()
+        );
+
+        // Perform the update
+        let asset_name = get_asset_name();
+        let asset = match release.assets.iter().find(|a| a.name == asset_name) {
+            Some(a) => a,
+            None => return Ok(false),
+        };
+
+        let tmp_dir = tempfile::Builder::new()
+            .prefix("ops-update")
+            .tempdir()?;
+
+        let tmp_tarball_path = tmp_dir.path().join(asset_name);
+        let _tmp_tarball = std::fs::File::create(&tmp_tarball_path)?;
+
+        let download_url = format!(
+            "https://github.com/{}/{}/releases/download/v{}/{}",
+            REPO_OWNER, REPO_NAME, release.version, asset_name
+        );
+
+        self_update::Download::from_url(&download_url)
+            .show_progress(false)
+            .download_to(&std::fs::File::create(&tmp_tarball_path)?)?;
+
+        let bin_name = std::path::PathBuf::from(BIN_NAME);
+        self_update::Extract::from_source(&tmp_tarball_path)
+            .archive(self_update::ArchiveKind::Tar(Some(self_update::Compression::Gz)))
+            .extract_file(tmp_dir.path(), &bin_name)?;
+
+        let new_exe = tmp_dir.path().join(BIN_NAME);
+        let current_exe = std::env::current_exe()?;
+
+        self_update::Move::from_source(&new_exe)
+            .replace_using_temp(&current_exe)
+            .to_dest(&current_exe)?;
+
+        println!(
+            "{}",
+            format!("✔ Updated to {}. Please re-run your command.", release.version).green()
+        );
+
+        return Ok(true);
+    }
+
+    Ok(false)
+}

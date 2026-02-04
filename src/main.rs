@@ -268,7 +268,17 @@ enum NodeGroupCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
+    // Auto-update check (skip for certain commands)
+    if !matches!(
+        &cli.command,
+        Commands::Update | Commands::Version | Commands::Serve { .. }
+    ) {
+        if let Ok(true) = update::check_and_auto_update() {
+            return Ok(()); // Exit after update, user should re-run
+        }
+    }
+
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,

@@ -18,6 +18,7 @@ use tokio_stream::StreamExt;
 use tower_http::cors::CorsLayer;
 
 use crate::serve::{actions, containers, logs, metrics};
+use crate::update;
 
 #[derive(Clone)]
 struct AppState {
@@ -70,6 +71,25 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
         "✓".green(),
         addr.cyan()
     );
+
+    // Spawn background task to check for updates every 5 minutes
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            match tokio::task::spawn_blocking(|| update::check_and_auto_update()).await {
+                Ok(Ok(true)) => {
+                    eprintln!("{}", "🔄 Updated! Restarting ops serve...".yellow());
+                    // Restart via systemd
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["restart", "ops-serve"])
+                        .spawn();
+                    std::process::exit(0);
+                }
+                _ => {}
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -374,11 +394,41 @@ async fn start(
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+struct DeployRequest {
+    deploy_path: Option<String>,
+    git_repo: Option<String>,
+    branch: Option<String>,
+}
+
 async fn deploy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    body: Option<Json<DeployRequest>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     check_auth(&state, &headers)?;
+
+    let req = body.map(|b| b.0).unwrap_or_default();
+
+    // If deploy_path is provided, deploy that specific app
+    if let Some(deploy_path) = req.deploy_path {
+        match actions::deploy_with_repo(
+            &deploy_path,
+            req.git_repo.as_deref(),
+            req.branch.as_deref(),
+        ) {
+            Ok(r) => return Ok(Json(serde_json::json!({
+                "success": r.success,
+                "message": r.message
+            }))),
+            Err(e) => {
+                eprintln!("deploy error for {}: {}", deploy_path, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    }
+
+    // Otherwise deploy all configured compose_dirs (legacy behavior)
     let mut results = Vec::new();
     for dir in &state.compose_dirs {
         match actions::deploy(dir) {
