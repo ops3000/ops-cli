@@ -185,15 +185,36 @@ pub async fn handle_init(
     }
     println!("  Serve port: {}", port.to_string().cyan());
 
-    let res = api::init_node(
+    // Try init first, fall back to reinit if node already exists
+    let res = match api::init_node(
         &token,
         &ssh_pub_key,
         region.as_deref(),
-        allowed_projects,
-        allowed_apps,
+        allowed_projects.clone(),
+        allowed_apps.clone(),
         Some(port),
         hostname.as_deref(),
-    ).await?;
+    ).await {
+        Ok(r) => r,
+        Err(e) => {
+            let err_msg = e.to_string();
+            // If node already exists, try reinit instead
+            if err_msg.contains("already registered") {
+                println!("{}", "Node already exists, re-initializing...".yellow());
+                api::reinit_node(
+                    &token,
+                    &ssh_pub_key,
+                    region.as_deref(),
+                    allowed_projects,
+                    allowed_apps,
+                    Some(port),
+                    hostname.as_deref(),
+                ).await?
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     println!();
     println!("{}", "✔ Node initialized successfully!".green().bold());

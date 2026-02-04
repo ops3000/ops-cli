@@ -351,6 +351,48 @@ pub async fn init_node(
     handle_response(res).await
 }
 
+/// Re-initialize an existing node (POST /nodes-v2/reinit)
+/// Used to get serve token for daemon setup on a server that's already registered
+pub async fn reinit_node(
+    token: &str,
+    ssh_pub_key: &str,
+    region: Option<&str>,
+    allowed_projects: Option<Vec<String>>,
+    allowed_apps: Option<Vec<String>>,
+    port: Option<u16>,
+    hostname: Option<&str>,
+) -> Result<NodeInitResponse> {
+    let client = Client::new();
+    let mut body = serde_json::json!({
+        "ssh_pub_key": ssh_pub_key
+    });
+
+    if let Some(r) = region {
+        body["region"] = serde_json::Value::String(r.to_string());
+    }
+    if let Some(p) = allowed_projects {
+        body["allowed_projects"] = serde_json::json!(p);
+    }
+    if let Some(a) = allowed_apps {
+        body["allowed_apps"] = serde_json::json!(a);
+    }
+    if let Some(port) = port {
+        body["port"] = serde_json::Value::Number(port.into());
+    }
+    if let Some(h) = hostname {
+        body["hostname"] = serde_json::Value::String(h.to_string());
+    }
+
+    let res = client
+        .post(format!("{}/nodes-v2/reinit", BASE_URL))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
+
+    handle_response(res).await
+}
+
 /// List user's nodes (GET /nodes-v2)
 pub async fn list_nodes_v2(token: &str) -> Result<NodeV2ListResponse> {
     let client = Client::new();
