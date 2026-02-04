@@ -5,9 +5,11 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 use std::net::ToSocketAddrs;
 
+/// Resolve IP address for a target
+/// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn handle_ip(target_str: String) -> Result<()> {
-    let target = utils::parse_target(&target_str)?;
-    let full_domain = format!("{}.{}.ops.autos", target.environment, target.project);
+    let target = utils::parse_target_v2(&target_str)?;
+    let full_domain = target.domain();
 
     println!("Resolving IP for {}...", full_domain.cyan());
 

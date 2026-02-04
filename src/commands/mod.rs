@@ -17,3 +17,6 @@ pub mod deploy;
 pub mod status;
 pub mod logs;
 pub mod serve;
+pub mod node_group;
+pub mod init;
+pub mod node;

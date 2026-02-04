@@ -1,29 +1,42 @@
 use crate::{api, config, utils};
+use crate::utils::TargetType;
 use anyhow::{Context, Result};
 use std::process::{Command, Stdio};
 use colored::Colorize;
-use std::io::Write; 
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 
 /// 这是一个通用的 SSH 命令构建器，其他模块可以复用
+/// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::NamedTempFile)> {
-    let target = utils::parse_target(target_str)?;
-    let full_domain = format!("{}.{}.ops.autos", target.environment, target.project);
+    let target = utils::parse_target_v2(target_str)?;
+    let full_domain = target.domain();
     let ssh_target = format!("root@{}", full_domain);
 
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
 
     println!("Fetching access credentials...");
-    let key_resp = api::get_ci_private_key(&token, &target.project, &target.environment).await?;
-    
+
+    // Get CI key based on target type
+    let private_key = match &target {
+        TargetType::NodeId { id, .. } => {
+            let key_resp = api::get_node_ci_key(&token, *id).await?;
+            key_resp.private_key
+        }
+        TargetType::AppTarget { app, project, .. } => {
+            let key_resp = api::get_app_ci_key(&token, project, app).await?;
+            key_resp.private_key
+        }
+    };
+
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
-    writeln!(temp_key_file, "{}", key_resp.private_key)?;
+    writeln!(temp_key_file, "{}", private_key)?;
     let meta = temp_key_file.as_file().metadata()?;
     let mut perms = meta.permissions();
     perms.set_mode(0o600);
     temp_key_file.as_file().set_permissions(perms)?;
-    
+
     println!("{}", "✔ Access granted via CI Key.".green());
     let key_path = temp_key_file.path().to_str().unwrap();
 

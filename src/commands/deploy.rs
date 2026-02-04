@@ -33,31 +33,23 @@ pub async fn handle_deploy(
     let target = &config.target;
     let deploy_path = &config.deploy_path;
 
-    // 2. 确保远程目录存在
+    // 2. 同步 App 记录到后端 (可选，失败不阻塞部署)
+    let (app_id, deployment_id) = sync_app_record(&config).await;
+
+    // 3. 确保远程目录存在
     println!("\n{}", "🔑 Connecting...".cyan());
     ssh::execute_remote_command(target, &format!("mkdir -p {}", deploy_path), None).await?;
 
-    // 3. 同步代码
-    if !restart_only {
-        sync_code(&config).await?;
+    // 4. 执行部署
+    let deploy_result = execute_deployment(&config, &service_filter, restart_only).await;
+
+    // 5. 更新部署状态
+    if let (Some(app_id), Some(deployment_id)) = (app_id, deployment_id) {
+        update_deployment_status(deployment_id, &deploy_result).await;
     }
 
-    // 4. 同步 env 文件
-    sync_env_files(&config).await?;
-
-    // 5. 同步额外目录
-    sync_directories(&config).await?;
-
-    // 6. 构建 & 启动 (用户自己的 docker-compose.yml)
-    build_and_start(&config, &service_filter, restart_only).await?;
-
-    // 7. Nginx 路由 + SSL
-    if !config.routes.is_empty() && !restart_only {
-        generate_and_upload_nginx(&config).await?;
-    }
-
-    // 8. 健康检查
-    run_health_checks(&config).await?;
+    // 6. 返回结果
+    deploy_result?;
 
     println!(
         "\n{} Deployed {} to {}",
@@ -65,6 +57,100 @@ pub async fn handle_deploy(
         config.app.green(),
         config.target.cyan()
     );
+    Ok(())
+}
+
+/// 同步 App 记录到后端，返回 (app_id, deployment_id)
+async fn sync_app_record(config: &OpsToml) -> (Option<i64>, Option<i64>) {
+    // 尝试加载 token
+    let cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(_) => {
+            println!("   {} (not logged in, skipping)", "⚠ App record sync skipped".yellow());
+            return (None, None);
+        }
+    };
+
+    let token = match cfg.token {
+        Some(t) => t,
+        None => {
+            println!("   {} (not logged in, skipping)", "⚠ App record sync skipped".yellow());
+            return (None, None);
+        }
+    };
+
+    // 同步 App
+    println!("{}", "📝 Syncing app record...".cyan());
+    let sync_result = match api::sync_app(&token, config).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("   {} {} (continuing anyway)", "⚠ Sync failed:".yellow(), e);
+            return (None, None);
+        }
+    };
+
+    let action = if sync_result.created { "Created" } else { "Updated" };
+    println!("   ✔ {} app (ID: {})", action.green(), sync_result.app_id);
+
+    // 创建部署记录
+    let deployment = match api::create_deployment(&token, sync_result.app_id, "cli").await {
+        Ok(d) => d,
+        Err(e) => {
+            println!("   {} {} (continuing anyway)", "⚠ Deployment record failed:".yellow(), e);
+            return (Some(sync_result.app_id), None);
+        }
+    };
+
+    println!("   ✔ Deployment #{} started", deployment.id);
+
+    (Some(sync_result.app_id), Some(deployment.id))
+}
+
+/// 更新部署状态
+async fn update_deployment_status(deployment_id: i64, result: &Result<()>) {
+    let cfg = config::load_config().ok();
+    let token = cfg.and_then(|c| c.token);
+
+    if let Some(token) = token {
+        let (status, logs) = match result {
+            Ok(_) => ("success", None),
+            Err(e) => ("failed", Some(e.to_string())),
+        };
+
+        if let Err(e) = api::update_deployment(&token, deployment_id, status, logs.as_deref()).await {
+            println!("   {} {}", "⚠ Failed to update deployment status:".yellow(), e);
+        }
+    }
+}
+
+/// 执行实际部署流程
+async fn execute_deployment(
+    config: &OpsToml,
+    service_filter: &Option<String>,
+    restart_only: bool,
+) -> Result<()> {
+    // 同步代码
+    if !restart_only {
+        sync_code(config).await?;
+    }
+
+    // 同步 env 文件
+    sync_env_files(config).await?;
+
+    // 同步额外目录
+    sync_directories(config).await?;
+
+    // 构建 & 启动
+    build_and_start(config, service_filter, restart_only).await?;
+
+    // Nginx 路由 + SSL
+    if !config.routes.is_empty() && !restart_only {
+        generate_and_upload_nginx(config).await?;
+    }
+
+    // 健康检查
+    run_health_checks(config).await?;
+
     Ok(())
 }
 
