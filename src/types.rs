@@ -76,10 +76,13 @@ fn default_source() -> String { "git".into() }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct OpsToml {
-    pub app: String,
-    pub target: String,
+    pub app: Option<String>,                    // 旧模式
+    pub project: Option<String>,                // 新：项目模式
+    pub target: Option<String>,                 // 旧模式必填，project 模式可选（自动解析）
     pub deploy_path: String,
     pub deploy: DeployConfig,
+    #[serde(default)]
+    pub apps: Vec<AppDef>,                      // 新：app 分组
     #[serde(default)]
     pub env_files: Vec<EnvFileMapping>,
     #[serde(default)]
@@ -98,7 +101,27 @@ pub struct DeployConfig {
     pub branch: Option<String>,
     #[serde(default)]
     pub git: Option<GitConfig>,
+    #[serde(default)]
+    pub compose_files: Option<Vec<String>>,
+    #[serde(default)]
+    pub registry: Option<RegistryConfig>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct AppDef {
+    pub name: String,
+    pub services: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct RegistryConfig {
+    pub url: String,
+    pub token: String,
+    #[serde(default = "default_registry_username")]
+    pub username: String,
+}
+
+fn default_registry_username() -> String { "oauth2".into() }
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct GitConfig {

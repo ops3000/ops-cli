@@ -151,6 +151,12 @@ fn extract_github_repo(git_url: &str) -> Option<String> {
 pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> {
     let client = Client::new();
 
+    let app_name = config.app.clone()
+        .or(config.project.clone())
+        .context("ops.toml must have 'app' or 'project'")?;
+
+    let target = config.target.clone().unwrap_or_default();
+
     // Extract github_repo from git config
     let github_repo = config.deploy.git.as_ref()
         .and_then(|g| extract_github_repo(&g.repo));
@@ -168,8 +174,8 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
     let config_json = serde_json::to_string(config).ok();
 
     let body = serde_json::json!({
-        "target": config.target,
-        "name": config.app,
+        "target": target,
+        "name": app_name,
         "deploy_path": config.deploy_path,
         "github_repo": github_repo,
         "github_branch": config.deploy.branch.clone().unwrap_or_else(|| "main".to_string()),

@@ -51,23 +51,31 @@ ops deploy [OPTIONS]
 
 **Options:**
 
-| Option           | Default    | Description                    |
-| ---------------- | ---------- | ------------------------------ |
-| `-f, --file`     | `ops.toml` | Path to config file            |
-| `--service`      |            | Deploy only a specific service |
-| `--restart-only` |            | Skip build, only restart       |
+| Option           | Default    | Description                                  |
+| ---------------- | ---------- | -------------------------------------------- |
+| `-f, --file`     | `ops.toml` | Path to config file                          |
+| `--service`      |            | Deploy only a specific docker-compose service |
+| `--app`          |            | Deploy only services in this app group       |
+| `--restart-only` |            | Skip build/pull, only restart containers     |
+| `--set`          |            | Set env variable (`KEY=VALUE`), repeatable   |
 
 **Deployment steps:**
 
 1. Parse `ops.toml` configuration
-2. Sync app record to backend API
-3. Sync code via git clone/pull or rsync
-4. Upload env files to remote paths
-5. Sync additional directories
-6. Run `docker compose build && docker compose up -d`
-7. Generate and upload nginx config
-8. Configure SSL via certbot (if `ssl = true` in routes)
-9. Run health checks
+2. Resolve target (from `target` field, or auto-lookup via API in project mode)
+3. Sync app record to backend API
+4. Sync code based on `source`:
+   - **`git`**: clone or pull from remote repository
+   - **`push`**: rsync local directory to server
+   - **`image`**: docker login (if registry configured) + `docker compose pull`
+5. Upload env files to remote paths
+6. Sync additional directories/files
+7. Build & start:
+   - **`git`/`push`**: `docker compose build && docker compose up -d`
+   - **`image`**: `docker compose up -d` (no build) + `docker image prune`
+8. Generate and upload nginx config (if routes defined)
+9. Configure SSL via certbot (if `ssl = true` in routes)
+10. Run health checks
 
 **Examples:**
 
@@ -76,13 +84,22 @@ ops deploy [OPTIONS]
 ops deploy
 
 # Deploy specific service
-ops deploy --service api
+ops deploy --service api_server
+
+# Deploy by app group (uses [[apps]] in ops.toml)
+ops deploy --app api
+
+# Pass environment variables to docker compose
+ops deploy --set IMAGE_TAG=abc123 --set ENV=production
 
 # Restart without rebuilding
 ops deploy --restart-only
 
+# Restart specific app group
+ops deploy --restart-only --app api
+
 # Use custom config file
-ops deploy -f production.ops.toml
+ops deploy -f ops.prod.toml
 ```
 
 ## status

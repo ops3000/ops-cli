@@ -19,32 +19,125 @@ pub fn load_ops_toml(path: &str) -> Result<OpsToml> {
     Ok(config)
 }
 
+// ===== 辅助函数 =====
+
+/// 解析 "$ENV_VAR" → 读环境变量值
+fn resolve_env_value(val: &str) -> Result<String> {
+    if val.starts_with('$') {
+        std::env::var(&val[1..])
+            .with_context(|| format!("Environment variable {} not set", val))
+    } else {
+        Ok(val.to_string())
+    }
+}
+
+/// 构建 -f 参数: "-f a.yml -f b.yml"，无配置时返回空串
+fn compose_file_args(config: &OpsToml) -> String {
+    config.deploy.compose_files.as_ref()
+        .map(|files| files.iter().map(|f| format!("-f {}", f)).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+}
+
+/// 构建环境变量前缀: "K=V K2=V2 "
+fn env_prefix(env_vars: &[String]) -> String {
+    if env_vars.is_empty() { return String::new(); }
+    let mut s = env_vars.join(" ");
+    s.push(' ');
+    s
+}
+
+/// 解析 --app 到具体的 docker-compose service names
+fn resolve_services(config: &OpsToml, app: &Option<String>, service: &Option<String>) -> String {
+    if let Some(svc) = service {
+        return svc.clone();
+    }
+    if let Some(app_name) = app {
+        if let Some(app_def) = config.apps.iter().find(|a| a.name == *app_name) {
+            return app_def.services.join(" ");
+        }
+    }
+    String::new()  // 空 = 所有 services
+}
+
+/// 解析 app 名称：优先 app 字段（旧模式），否则 project 字段
+fn resolve_app_name(config: &OpsToml) -> Result<String> {
+    config.app.clone()
+        .or(config.project.clone())
+        .context("ops.toml must have 'app' or 'project'")
+}
+
+/// 解析部署目标：优先用 ops.toml 的 target，否则从 API 查询
+async fn resolve_target(config: &OpsToml, app_filter: &Option<String>) -> Result<String> {
+    // 1. 如果 ops.toml 有 target，直接用
+    if let Some(ref t) = config.target {
+        return Ok(t.clone());
+    }
+
+    // 2. project 模式：从 API 解析
+    let project = config.project.as_ref()
+        .context("ops.toml must have 'target' or 'project'")?;
+
+    let cfg = config::load_config().context("Config error")?;
+    let token = cfg.token.context("Please run `ops login` first.")?;
+
+    if let Some(app_name) = app_filter {
+        // --app 指定了 app，查找该 app 的主节点
+        let node = api::get_app_primary_node(&token, project, app_name).await
+            .with_context(|| format!("Failed to find primary node for app '{}' in project '{}'", app_name, project))?;
+        Ok(node.domain)
+    } else {
+        // 全量部署，查找项目下的第一个节点
+        let nodes_resp = api::list_nodes_v2(&token).await?;
+        let node = nodes_resp.nodes.iter()
+            .find(|n| n.bound_apps.as_ref().map_or(false, |apps|
+                apps.iter().any(|a| a.project_name == *project)))
+            .context(format!("No nodes bound to project '{}'", project))?;
+        Ok(node.domain.clone())
+    }
+}
+
 /// ops deploy 主入口
 pub async fn handle_deploy(
     file: String,
     service_filter: Option<String>,
+    app_filter: Option<String>,
     restart_only: bool,
+    env_vars: Vec<String>,
 ) -> Result<()> {
     // 1. 解析配置
     println!("{}", "📦 Reading ops.toml...".cyan());
     let config = load_ops_toml(&file)?;
-    println!("   App: {} → {}", config.app.green(), config.target.cyan());
 
-    let target = &config.target;
+    let app_name = resolve_app_name(&config)?;
+    let target = resolve_target(&config, &app_filter).await?;
+
+    println!("   App: {} → {}", app_name.green(), target.cyan());
+    if let Some(ref app) = app_filter {
+        let svcs = resolve_services(&config, &app_filter, &service_filter);
+        if !svcs.is_empty() {
+            println!("   Group: {} → [{}]", app.yellow(), svcs);
+        }
+    }
+    if let Some(ref svc) = service_filter {
+        println!("   Service: {}", svc.yellow());
+    }
+
     let deploy_path = &config.deploy_path;
 
     // 2. 同步 App 记录到后端 (可选，失败不阻塞部署)
-    let (app_id, deployment_id) = sync_app_record(&config).await;
+    let (app_id, deployment_id) = sync_app_record(&config, &target).await;
 
     // 3. 确保远程目录存在
     println!("\n{}", "🔑 Connecting...".cyan());
-    ssh::execute_remote_command(target, &format!("mkdir -p {}", deploy_path), None).await?;
+    ssh::execute_remote_command(&target, &format!("mkdir -p {}", deploy_path), None).await?;
 
     // 4. 执行部署
-    let deploy_result = execute_deployment(&config, &service_filter, restart_only).await;
+    let deploy_result = execute_deployment(
+        &config, &target, &service_filter, &app_filter, restart_only, &env_vars,
+    ).await;
 
     // 5. 更新部署状态
-    if let (Some(app_id), Some(deployment_id)) = (app_id, deployment_id) {
+    if let (Some(_app_id), Some(deployment_id)) = (app_id, deployment_id) {
         update_deployment_status(deployment_id, &deploy_result).await;
     }
 
@@ -54,14 +147,14 @@ pub async fn handle_deploy(
     println!(
         "\n{} Deployed {} to {}",
         "✅".green(),
-        config.app.green(),
-        config.target.cyan()
+        app_name.green(),
+        target.cyan()
     );
     Ok(())
 }
 
 /// 同步 App 记录到后端，返回 (app_id, deployment_id)
-async fn sync_app_record(config: &OpsToml) -> (Option<i64>, Option<i64>) {
+async fn sync_app_record(config: &OpsToml, _target: &str) -> (Option<i64>, Option<i64>) {
     // 尝试加载 token
     let cfg = match config::load_config() {
         Ok(c) => c,
@@ -126,38 +219,46 @@ async fn update_deployment_status(deployment_id: i64, result: &Result<()>) {
 /// 执行实际部署流程
 async fn execute_deployment(
     config: &OpsToml,
+    target: &str,
     service_filter: &Option<String>,
+    app_filter: &Option<String>,
     restart_only: bool,
+    env_vars: &[String],
 ) -> Result<()> {
     // 同步代码
     if !restart_only {
-        sync_code(config).await?;
+        sync_code(config, target, app_filter, service_filter, env_vars).await?;
     }
 
     // 同步 env 文件
-    sync_env_files(config).await?;
+    sync_env_files(config, target).await?;
 
     // 同步额外目录
-    sync_directories(config).await?;
+    sync_directories(config, target).await?;
 
     // 构建 & 启动
-    build_and_start(config, service_filter, restart_only).await?;
+    build_and_start(config, target, service_filter, app_filter, restart_only, env_vars).await?;
 
     // Nginx 路由 + SSL
     if !config.routes.is_empty() && !restart_only {
-        generate_and_upload_nginx(config).await?;
+        generate_and_upload_nginx(config, target).await?;
     }
 
     // 健康检查
-    run_health_checks(config).await?;
+    run_health_checks(config, target).await?;
 
     Ok(())
 }
 
 // ===== 内部函数 =====
 
-async fn sync_code(config: &OpsToml) -> Result<()> {
-    let target = &config.target;
+async fn sync_code(
+    config: &OpsToml,
+    target: &str,
+    app_filter: &Option<String>,
+    service_filter: &Option<String>,
+    env_vars: &[String],
+) -> Result<()> {
     let deploy_path = &config.deploy_path;
 
     match config.deploy.source.as_str() {
@@ -199,6 +300,29 @@ async fn sync_code(config: &OpsToml) -> Result<()> {
             println!("\n{}", "📤 Syncing code (rsync)...".cyan());
             rsync_push(target, deploy_path).await?;
             println!("   {}", "✔ Code synced.".green());
+        }
+        "image" => {
+            println!("\n{}", "🐳 Pulling images...".cyan());
+
+            // 1. Docker login
+            if let Some(reg) = &config.deploy.registry {
+                let user = resolve_env_value(&reg.username)?;
+                let token = resolve_env_value(&reg.token)?;
+                ssh::execute_remote_command(
+                    target,
+                    &format!("echo '{}' | docker login {} -u {} --password-stdin", token, reg.url, user),
+                    None,
+                ).await?;
+                println!("   {}", "✔ Registry login".green());
+            }
+
+            // 2. Pull
+            let compose = compose_file_args(config);
+            let env = env_prefix(env_vars);
+            let svcs = resolve_services(config, app_filter, service_filter);
+            let cmd = format!("cd {} && {}docker compose {} pull {}", deploy_path, env, compose, svcs);
+            ssh::execute_remote_command(target, &cmd, None).await?;
+            println!("   {}", "✔ Images pulled".green());
         }
         other => return Err(anyhow::anyhow!("Unknown deploy source: {}", other)),
     }
@@ -278,12 +402,11 @@ async fn rsync_push(target_str: &str, deploy_path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn sync_env_files(config: &OpsToml) -> Result<()> {
+async fn sync_env_files(config: &OpsToml, target: &str) -> Result<()> {
     if config.env_files.is_empty() {
         return Ok(());
     }
 
-    let target = &config.target;
     let deploy_path = &config.deploy_path;
     let mut printed_header = false;
 
@@ -307,12 +430,11 @@ async fn sync_env_files(config: &OpsToml) -> Result<()> {
     Ok(())
 }
 
-async fn sync_directories(config: &OpsToml) -> Result<()> {
+async fn sync_directories(config: &OpsToml, target: &str) -> Result<()> {
     if config.sync.is_empty() {
         return Ok(());
     }
 
-    let target = &config.target;
     let deploy_path = &config.deploy_path;
     let mut printed_header = false;
 
@@ -330,9 +452,10 @@ async fn sync_directories(config: &OpsToml) -> Result<()> {
     Ok(())
 }
 
-async fn generate_and_upload_nginx(config: &OpsToml) -> Result<()> {
+async fn generate_and_upload_nginx(config: &OpsToml, target: &str) -> Result<()> {
     println!("\n{}", "⚙️  Generating nginx config...".cyan());
-    let target = &config.target;
+
+    let app_name = resolve_app_name(config)?;
 
     let mut nginx = String::new();
     for route in &config.routes {
@@ -370,7 +493,7 @@ async fn generate_and_upload_nginx(config: &OpsToml) -> Result<()> {
     }
 
     // 上传 per-app 配置文件
-    let conf_name = format!("ops-{}.conf", config.app);
+    let conf_name = format!("ops-{}.conf", app_name);
     ssh::execute_remote_command(
         target,
         &format!("cat > /etc/nginx/sites-available/{}", conf_name),
@@ -412,26 +535,41 @@ async fn generate_and_upload_nginx(config: &OpsToml) -> Result<()> {
 
 async fn build_and_start(
     config: &OpsToml,
-    filter: &Option<String>,
+    target: &str,
+    service_filter: &Option<String>,
+    app_filter: &Option<String>,
     restart_only: bool,
+    env_vars: &[String],
 ) -> Result<()> {
-    let target = &config.target;
     let deploy_path = &config.deploy_path;
 
     println!("\n{}", "🚀 Building & starting services...".cyan());
 
-    let svc_arg = match filter {
-        Some(s) => format!(" {}", s),
-        None => String::new(),
-    };
+    let compose = compose_file_args(config);
+    let env = env_prefix(env_vars);
+    let svcs = resolve_services(config, app_filter, service_filter);
+
+    // Add space before compose args and services if non-empty
+    let compose_arg = if compose.is_empty() { String::new() } else { format!(" {}", compose) };
+    let svc_arg = if svcs.is_empty() { String::new() } else { format!(" {}", svcs) };
 
     if restart_only {
-        let cmd = format!("cd {} && docker compose restart{}", deploy_path, svc_arg);
+        let cmd = format!("cd {} && {}docker compose{} restart{}", deploy_path, env, compose_arg, svc_arg);
         ssh::execute_remote_command(target, &cmd, None).await?;
-    } else {
+    } else if config.deploy.source == "image" {
+        // image 模式: 只 up，不 build
         let cmd = format!(
-            "cd {} && docker compose build{} && docker compose up -d --remove-orphans{}",
-            deploy_path, svc_arg, svc_arg
+            "cd {} && {}docker compose{} up -d --remove-orphans{}",
+            deploy_path, env, compose_arg, svc_arg
+        );
+        ssh::execute_remote_command(target, &cmd, None).await?;
+        // 清理旧镜像
+        ssh::execute_remote_command(target, "docker image prune -f", None).await.ok();
+    } else {
+        // 旧行为: build + up
+        let cmd = format!(
+            "cd {} && {}docker compose{} build{} && {}docker compose{} up -d --remove-orphans{}",
+            deploy_path, env, compose_arg, svc_arg, env, compose_arg, svc_arg
         );
         ssh::execute_remote_command(target, &cmd, None).await?;
     }
@@ -439,12 +577,11 @@ async fn build_and_start(
     Ok(())
 }
 
-async fn run_health_checks(config: &OpsToml) -> Result<()> {
+async fn run_health_checks(config: &OpsToml, target: &str) -> Result<()> {
     if config.healthchecks.is_empty() {
         return Ok(());
     }
 
-    let target = &config.target;
     println!("\n{}", "💚 Health checks:".cyan());
 
     for hc in &config.healthchecks {

@@ -125,6 +125,16 @@ enum Commands {
         target: String,
     },
 
+    /// Generate ops.toml by scanning current project
+    Launch {
+        /// Output file path
+        #[arg(short, long, default_value = "ops.toml")]
+        output: String,
+        /// Accept all defaults without prompting
+        #[arg(short, long)]
+        yes: bool,
+    },
+
     /// Deploy services defined in ops.toml
     Deploy {
         /// Path to ops.toml config file
@@ -133,9 +143,15 @@ enum Commands {
         /// Deploy only a specific service
         #[arg(long)]
         service: Option<String>,
+        /// Deploy only services in this app group
+        #[arg(long)]
+        app: Option<String>,
         /// Skip build, only restart containers
         #[arg(long)]
         restart_only: bool,
+        /// Set environment variables (KEY=VALUE), can be repeated
+        #[arg(long = "set", value_name = "KEY=VALUE")]
+        env_vars: Vec<String>,
     },
 
     /// Show status of deployed services (reads ops.toml)
@@ -337,8 +353,10 @@ async fn main() -> Result<()> {
                 commands::node_group::handle_nodes(target.clone()).await,
         },
         
-        Commands::Deploy { file, service, restart_only } =>
-            commands::deploy::handle_deploy(file.clone(), service.clone(), *restart_only).await,
+        Commands::Launch { output, yes } =>
+            commands::launch::handle_launch(output.clone(), *yes).await,
+        Commands::Deploy { file, service, app, restart_only, env_vars } =>
+            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone()).await,
         Commands::Status { file } =>
             commands::status::handle_status(file.clone()).await,
         Commands::Logs { service, file, tail, follow } =>

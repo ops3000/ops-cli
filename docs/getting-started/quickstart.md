@@ -55,7 +55,13 @@ This binds the node to the `api` app under `my-project`.
 
 ## 6. Deploy
 
-Create an `ops.toml` in your project root:
+Generate an `ops.toml` by scanning your project:
+
+```bash
+ops launch
+```
+
+Or create one manually in your project root:
 
 ```toml
 app = "api"

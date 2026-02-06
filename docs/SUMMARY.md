@@ -15,6 +15,7 @@
 * [Projects](commands/projects.md)
 * [Nodes](commands/nodes.md)
 * [Node Groups](commands/node-groups.md)
+* [Launch](commands/launch.md)
 * [Deployment](commands/deployment.md)
 * [SSH & File Transfer](commands/ssh.md)
 * [Network](commands/network.md)
