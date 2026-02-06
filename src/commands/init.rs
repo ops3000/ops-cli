@@ -1,6 +1,7 @@
 use crate::{api, config, ssh};
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde::Deserialize;
 use std::io::{self, Write};
 use std::process::Command;
 use std::fs;
@@ -223,6 +224,122 @@ fn configure_nginx(domain: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct GeoResponse {
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    timezone: String,
+}
+
+/// Detect region from IP geolocation via ip-api.com
+async fn detect_region() -> Option<(String, String)> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get("http://ip-api.com/json")
+        .send()
+        .await
+        .ok()?
+        .json::<GeoResponse>()
+        .await
+        .ok()?;
+
+    let ops_region = timezone_to_region(&resp.timezone)?;
+    let label = if resp.city.is_empty() {
+        resp.timezone.clone()
+    } else {
+        resp.city
+    };
+
+    Some((ops_region, label))
+}
+
+/// Map timezone string to OPS region
+fn timezone_to_region(tz: &str) -> Option<String> {
+    let region = if tz.starts_with("America/") {
+        let city = &tz["America/".len()..];
+        match city {
+            "New_York" | "Toronto" | "Montreal" | "Detroit" | "Atlanta"
+            | "Miami" | "Boston" | "Philadelphia" => "us-east",
+            "Chicago" | "Denver" | "Dallas" | "Houston" | "Winnipeg"
+            | "Mexico_City" => "us-central",
+            "Los_Angeles" | "Vancouver" | "Seattle" | "Phoenix"
+            | "San_Francisco" => "us-west",
+            "Sao_Paulo" | "Buenos_Aires" | "Santiago" | "Bogota"
+            | "Lima" => "sa-east",
+            _ => "us-east",
+        }
+    } else if tz.starts_with("Europe/") {
+        let city = &tz["Europe/".len()..];
+        match city {
+            "London" | "Dublin" | "Lisbon" => "eu-west",
+            _ => "eu-central",
+        }
+    } else if tz.starts_with("Asia/") {
+        let city = &tz["Asia/".len()..];
+        match city {
+            "Tokyo" | "Seoul" => "ap-northeast",
+            "Shanghai" | "Hong_Kong" | "Taipei" | "Chongqing" => "ap-east",
+            "Singapore" | "Jakarta" | "Bangkok" | "Ho_Chi_Minh"
+            | "Kuala_Lumpur" | "Manila" => "ap-southeast",
+            "Mumbai" | "Kolkata" | "Colombo" | "Karachi" => "ap-south",
+            "Dubai" | "Riyadh" | "Baghdad" | "Tehran" => "me-south",
+            _ => "ap-southeast",
+        }
+    } else if tz.starts_with("Australia/") || tz.starts_with("Pacific/Auckland") {
+        "ap-southeast"
+    } else if tz.starts_with("Africa/") {
+        "af-south"
+    } else {
+        return None;
+    };
+
+    Some(region.to_string())
+}
+
+/// Prompt user to confirm or override the detected region
+fn confirm_region(detected: Option<(String, String)>) -> Option<String> {
+    match detected {
+        Some((region, city)) => {
+            println!("  Detected: {} ({})", region.cyan(), city);
+            print!("  Use this region? [Y/n/custom]: ");
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let input = input.trim();
+
+            if input.is_empty() || input.eq_ignore_ascii_case("y") || input.eq_ignore_ascii_case("yes") {
+                Some(region)
+            } else if input.eq_ignore_ascii_case("n") || input.eq_ignore_ascii_case("no") {
+                None
+            } else {
+                // User typed a custom region
+                Some(input.to_string())
+            }
+        }
+        None => {
+            println!("  {}", "Could not detect region automatically.".yellow());
+            print!("  Enter region (or press Enter to skip): ");
+            io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let input = input.trim();
+
+            if input.is_empty() {
+                None
+            } else {
+                Some(input.to_string())
+            }
+        }
+    }
+}
+
 /// Handle `ops init` command
 /// Initializes this server as a node in the OPS platform
 pub async fn handle_init(
@@ -253,7 +370,21 @@ pub async fn handle_init(
     let ssh_pub_key = get_ssh_public_key()?;
     println!("{}", "✔ SSH public key found".green());
 
-    // 4. Try to initialize node
+    // 4. Auto-detect region if not provided
+    let region = if region.is_some() {
+        region
+    } else {
+        println!();
+        println!("{}", "Detecting region...".cyan());
+        let detected = detect_region().await;
+        let confirmed = confirm_region(detected);
+        if let Some(ref r) = confirmed {
+            println!("{}", format!("✔ Region: {}", r).green());
+        }
+        confirmed
+    };
+
+    // 5. Try to initialize node
     println!("Registering node...");
 
     let res = match api::init_node(
@@ -300,17 +431,18 @@ pub async fn handle_init(
     println!("  Node ID:  {}", res.node_id.to_string().cyan().bold());
     println!("  Domain:   {}", res.domain.cyan());
     println!("  IP:       {}", res.ip_address);
-    if let Some(r) = &res.region {
-        println!("  Region:   {}", r);
+    match &res.region {
+        Some(r) => println!("  Region:   {}", r.cyan()),
+        None => println!("  Region:   {}", "(not set, use --region to configure)".dimmed()),
     }
 
-    // 5. Add CI public key to authorized_keys
+    // 6. Add CI public key to authorized_keys
     println!();
     println!("Configuring SSH access...");
     ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
     println!("{}", "✔ CI key added to authorized_keys".green());
 
-    // 6. Configure systemd daemon (always)
+    // 7. Configure systemd daemon (always)
     println!();
     let compose_directory = compose_dir.as_deref().unwrap_or("/root");
     configure_serve_daemon(
