@@ -152,6 +152,34 @@ enum Commands {
         /// Set environment variables (KEY=VALUE), can be repeated
         #[arg(long = "set", value_name = "KEY=VALUE")]
         env_vars: Vec<String>,
+        /// Deploy to a specific node only (by node ID)
+        #[arg(long)]
+        node: Option<u64>,
+        /// Deploy to a specific region only
+        #[arg(long)]
+        region: Option<String>,
+        /// Deploy nodes sequentially instead of in parallel
+        #[arg(long)]
+        rolling: bool,
+    },
+
+    /// Remote build on a persistent build node (like Depot.dev)
+    Build {
+        /// Path to ops.toml config file
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+        /// Git ref to build (commit SHA, branch, or tag)
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+        /// Only build a specific service image
+        #[arg(short, long)]
+        service: Option<String>,
+        /// Docker image tag (default: latest)
+        #[arg(short, long)]
+        tag: Option<String>,
+        /// Skip pushing images to registry
+        #[arg(long)]
+        no_push: bool,
     },
 
     /// Show status of deployed services (reads ops.toml)
@@ -194,6 +222,14 @@ enum Commands {
         #[arg(long)]
         domain: Option<String>,
     },
+
+    /// Manage custom domains for your app
+    #[command(subcommand)]
+    Domain(DomainCommands),
+
+    /// Manage multi-node resource pool
+    #[command(subcommand)]
+    Pool(PoolCommands),
 
     /// Update ops to the latest version
     Update,
@@ -281,6 +317,64 @@ enum NodeGroupCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum DomainCommands {
+    /// Add a custom domain to your app
+    Add {
+        /// Custom domain (e.g., api.example.com)
+        domain: String,
+        /// Path to ops.toml
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+    },
+    /// List custom domains for your app
+    List {
+        /// Path to ops.toml
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+    },
+    /// Remove a custom domain
+    Remove {
+        /// Custom domain to remove
+        domain: String,
+        /// Path to ops.toml
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PoolCommands {
+    /// Show resource pool status for an app
+    Status {
+        /// Target in app.project format (e.g., api.RedQ)
+        target: String,
+    },
+    /// Change load balancing strategy
+    Strategy {
+        /// Target in app.project format (e.g., api.RedQ)
+        target: String,
+        /// Strategy: round-robin, geo, weighted, failover
+        strategy: String,
+    },
+    /// Drain a node (stop routing new traffic)
+    Drain {
+        /// Target in app.project format (e.g., api.RedQ)
+        target: String,
+        /// Node ID to drain
+        #[arg(long)]
+        node: u64,
+    },
+    /// Restore a drained node to active rotation
+    Undrain {
+        /// Target in app.project format (e.g., api.RedQ)
+        target: String,
+        /// Node ID to restore
+        #[arg(long)]
+        node: u64,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -355,8 +449,10 @@ async fn main() -> Result<()> {
         
         Commands::Launch { output, yes } =>
             commands::launch::handle_launch(output.clone(), *yes).await,
-        Commands::Deploy { file, service, app, restart_only, env_vars } =>
-            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone()).await,
+        Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling } =>
+            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling).await,
+        Commands::Build { file, git_ref, service, tag, no_push } =>
+            commands::build::handle_build(file.clone(), git_ref.clone(), service.clone(), tag.clone(), *no_push).await,
         Commands::Status { file } =>
             commands::status::handle_status(file.clone()).await,
         Commands::Logs { service, file, tail, follow } =>
@@ -368,6 +464,26 @@ async fn main() -> Result<()> {
             } else {
                 commands::serve::handle_serve(token.clone(), *port, compose_dir.clone()).await
             }
+        },
+
+        Commands::Domain(cmd) => match cmd {
+            DomainCommands::Add { domain, file } =>
+                commands::domain::handle_add(file.clone(), domain.clone()).await,
+            DomainCommands::List { file } =>
+                commands::domain::handle_list(file.clone()).await,
+            DomainCommands::Remove { domain, file } =>
+                commands::domain::handle_remove(file.clone(), domain.clone()).await,
+        },
+
+        Commands::Pool(cmd) => match cmd {
+            PoolCommands::Status { target } =>
+                commands::pool::handle_status(target.clone()).await,
+            PoolCommands::Strategy { target, strategy } =>
+                commands::pool::handle_strategy(target.clone(), strategy.clone()).await,
+            PoolCommands::Drain { target, node } =>
+                commands::pool::handle_drain(target.clone(), *node).await,
+            PoolCommands::Undrain { target, node } =>
+                commands::pool::handle_undrain(target.clone(), *node).await,
         },
 
         Commands::Update => commands::update::handle_update().await,

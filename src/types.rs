@@ -74,7 +74,7 @@ pub struct ProjectListResponse {
 
 fn default_source() -> String { "git".into() }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct OpsToml {
     pub app: Option<String>,                    // 旧模式
     pub project: Option<String>,                // 新：项目模式
@@ -91,9 +91,46 @@ pub struct OpsToml {
     pub routes: Vec<RouteDef>,
     #[serde(default)]
     pub healthchecks: Vec<HealthCheck>,
+    pub build: Option<BuildConfig>,             // 远程构建配置
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+// ===== 远程构建配置 =====
+
+fn default_build_source() -> String { "git".into() }
+fn default_binary_arg() -> String { "SERVICE_BINARY".into() }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct BuildConfig {
+    pub node: Option<u64>,                      // 构建节点 ID (可选，不指定则自动解析)
+    pub path: String,                           // 远程构建目录
+    pub command: String,                        // 构建命令
+    #[serde(default = "default_build_source")]
+    pub source: String,                         // "git" | "push"
+    pub branch: Option<String>,                 // 默认分支
+    pub git: Option<BuildGitConfig>,            // Git 配置
+    pub image: Option<BuildImageConfig>,        // Docker 镜像打包
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct BuildGitConfig {
+    pub repo: String,
+    pub ssh_key: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct BuildImageConfig {
+    pub dockerfile: String,                     // e.g. "Dockerfile.prod"
+    pub registry: String,                       // e.g. "ghcr.io"
+    pub token: String,                          // e.g. "$GHCR_PAT"
+    #[serde(default = "default_registry_username")]
+    pub username: String,                       // e.g. "oauth2"
+    pub prefix: String,                         // e.g. "ghcr.io/scheissedu/redq"
+    #[serde(default = "default_binary_arg")]
+    pub binary_arg: String,                     // Dockerfile ARG name
+    pub services: Vec<String>,                  // 服务列表
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DeployConfig {
     #[serde(default = "default_source")]
     pub source: String,
@@ -123,25 +160,25 @@ pub struct RegistryConfig {
 
 fn default_registry_username() -> String { "oauth2".into() }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct GitConfig {
     pub repo: String,
     pub ssh_key: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EnvFileMapping {
     pub local: String,
     pub remote: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SyncMapping {
     pub local: String,
     pub remote: String,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RouteDef {
     pub domain: String,
     pub port: u16,
@@ -149,7 +186,7 @@ pub struct RouteDef {
     pub ssl: bool,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct HealthCheck {
     pub name: String,
     pub url: String,
@@ -335,4 +372,51 @@ pub struct MessageResponse {
 pub struct RegenerateTokenResponse {
     pub message: String,
     pub serve_token: String,
+}
+
+// ===== Custom Domains API =====
+
+#[derive(Deserialize, Debug)]
+pub struct AddDomainResponse {
+    pub message: String,
+    pub domain: String,
+    pub cname_target: String,
+    pub ssl_status: String,
+    pub instructions: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct DomainItem {
+    pub domain: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ListDomainsResponse {
+    pub domains: Vec<DomainItem>,
+    pub default_domain: String,
+}
+
+// ===== Deploy Targets API (multi-node deployment) =====
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct DeployTarget {
+    pub node_id: i64,
+    pub domain: String,
+    pub ip_address: String,
+    pub hostname: Option<String>,
+    pub region: Option<String>,
+    pub zone: Option<String>,
+    pub weight: i64,
+    pub is_primary: bool,
+    pub status: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct DeployTargetsResponse {
+    pub mode: String,
+    pub node_group_id: Option<i64>,
+    pub lb_strategy: Option<String>,
+    pub targets: Vec<DeployTarget>,
 }

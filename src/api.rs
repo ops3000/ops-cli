@@ -447,6 +447,18 @@ pub async fn get_node_ci_key(token: &str, node_id: u64) -> Result<CiKeyResponse>
     handle_response(res).await
 }
 
+/// Get all deploy targets for app (GET /apps/:project/:app/deploy-targets)
+pub async fn get_app_deploy_targets(token: &str, project: &str, app: &str) -> Result<crate::types::DeployTargetsResponse> {
+    let client = Client::new();
+    let res = client
+        .get(format!("{}/apps/{}/{}/deploy-targets", BASE_URL, project, app))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    handle_response(res).await
+}
+
 /// Get primary node for app (GET /apps/:project/:app/primary-node)
 pub async fn get_app_primary_node(token: &str, project: &str, app: &str) -> Result<PrimaryNodeResponse> {
     let client = Client::new();
@@ -528,5 +540,77 @@ pub async fn bind_node_by_name(
         .send()
         .await?;
 
+    handle_response(res).await
+}
+
+// ===== Custom Domains API =====
+
+pub async fn add_custom_domain(token: &str, project: &str, app: &str, domain: &str) -> Result<crate::types::AddDomainResponse> {
+    let client = Client::new();
+    let body = serde_json::json!({
+        "project": project,
+        "app": app,
+        "domain": domain,
+    });
+    let res = client
+        .post(format!("{}/domains", BASE_URL))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+pub async fn list_custom_domains(token: &str, project: &str, app: &str) -> Result<crate::types::ListDomainsResponse> {
+    let client = Client::new();
+    let res = client
+        .get(format!("{}/domains?project={}&app={}", BASE_URL, project, app))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+pub async fn remove_custom_domain(token: &str, domain: &str) -> Result<crate::types::MessageResponse> {
+    let client = Client::new();
+    let res = client
+        .delete(format!("{}/domains/{}", BASE_URL, domain))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+// ===== Pool Management API =====
+
+pub async fn update_node_group_strategy(token: &str, group_id: i64, strategy: &str) -> Result<crate::types::MessageResponse> {
+    let client = Client::new();
+    let body = serde_json::json!({ "lb_strategy": strategy });
+    let res = client
+        .patch(format!("{}/node-groups/{}", BASE_URL, group_id))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+pub async fn drain_node(token: &str, group_id: i64, node_id: u64) -> Result<crate::types::MessageResponse> {
+    let client = Client::new();
+    let res = client
+        .post(format!("{}/node-groups/{}/nodes/{}/drain", BASE_URL, group_id, node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+pub async fn undrain_node(token: &str, group_id: i64, node_id: u64) -> Result<crate::types::MessageResponse> {
+    let client = Client::new();
+    let res = client
+        .post(format!("{}/node-groups/{}/nodes/{}/undrain", BASE_URL, group_id, node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
     handle_response(res).await
 }

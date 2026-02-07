@@ -1,8 +1,8 @@
-use crate::types::OpsToml;
+use crate::types::{OpsToml, DeployTarget};
 use crate::commands::ssh;
 use crate::commands::scp;
 use crate::{api, config, utils};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 use std::fs;
 use std::io::Write;
@@ -66,34 +66,42 @@ fn resolve_app_name(config: &OpsToml) -> Result<String> {
         .context("ops.toml must have 'app' or 'project'")
 }
 
-/// 解析部署目标：优先用 ops.toml 的 target，否则从 API 查询
-async fn resolve_target(config: &OpsToml, app_filter: &Option<String>) -> Result<String> {
-    // 1. 如果 ops.toml 有 target，直接用
+/// 解析部署目标：优先用 ops.toml 的 target，否则从 API 查询所有目标节点
+async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Result<Vec<DeployTarget>> {
+    // 1. 如果 ops.toml 有 target，包装为单节点
     if let Some(ref t) = config.target {
-        return Ok(t.clone());
+        return Ok(vec![DeployTarget {
+            node_id: 0,
+            domain: t.clone(),
+            ip_address: String::new(),
+            hostname: None,
+            region: None,
+            zone: None,
+            weight: 100,
+            is_primary: true,
+            status: "unknown".into(),
+        }]);
     }
 
-    // 2. project 模式：从 API 解析
+    // 2. project 模式：从 API 获取所有部署目标
     let project = config.project.as_ref()
         .context("ops.toml must have 'target' or 'project'")?;
 
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
 
-    if let Some(app_name) = app_filter {
-        // --app 指定了 app，查找该 app 的主节点
-        let node = api::get_app_primary_node(&token, project, app_name).await
-            .with_context(|| format!("Failed to find primary node for app '{}' in project '{}'", app_name, project))?;
-        Ok(node.domain)
-    } else {
-        // 全量部署，查找项目下的第一个节点
-        let nodes_resp = api::list_nodes_v2(&token).await?;
-        let node = nodes_resp.nodes.iter()
-            .find(|n| n.bound_apps.as_ref().map_or(false, |apps|
-                apps.iter().any(|a| a.project_name == *project)))
-            .context(format!("No nodes bound to project '{}'", project))?;
-        Ok(node.domain.clone())
+    let app_name = app_filter.as_ref()
+        .or(config.app.as_ref())
+        .context("Cannot resolve deploy targets: need --app or 'app' in ops.toml")?;
+
+    let resp = api::get_app_deploy_targets(&token, project, app_name).await
+        .with_context(|| format!("Failed to get deploy targets for '{}' in project '{}'", app_name, project))?;
+
+    if resp.targets.is_empty() {
+        return Err(anyhow!("No nodes bound to app '{}' in project '{}'", app_name, project));
     }
+
+    Ok(resp.targets)
 }
 
 /// ops deploy 主入口
@@ -103,15 +111,45 @@ pub async fn handle_deploy(
     app_filter: Option<String>,
     restart_only: bool,
     env_vars: Vec<String>,
+    node_filter: Option<u64>,
+    region_filter: Option<String>,
+    rolling: bool,
 ) -> Result<()> {
     // 1. 解析配置
     println!("{}", "📦 Reading ops.toml...".cyan());
     let config = load_ops_toml(&file)?;
 
     let app_name = resolve_app_name(&config)?;
-    let target = resolve_target(&config, &app_filter).await?;
+    let mut targets = resolve_targets(&config, &app_filter).await?;
 
-    println!("   App: {} → {}", app_name.green(), target.cyan());
+    // 过滤目标节点
+    if let Some(nid) = node_filter {
+        targets.retain(|t| t.node_id == nid as i64);
+        if targets.is_empty() {
+            return Err(anyhow!("Node {} is not bound to this app", nid));
+        }
+    }
+    if let Some(ref region) = region_filter {
+        targets.retain(|t| t.region.as_deref() == Some(region.as_str()));
+        if targets.is_empty() {
+            return Err(anyhow!("No nodes in region '{}' bound to this app", region));
+        }
+    }
+
+    // 打印部署计划
+    println!("   App: {}", app_name.green());
+    if targets.len() == 1 {
+        println!("   Target: {}", targets[0].domain.cyan());
+    } else {
+        println!("   Targets: {} node(s){}", targets.len().to_string().cyan(),
+            if rolling { " (rolling)" } else { " (parallel)" });
+        for t in &targets {
+            let region_str = t.region.as_deref().unwrap_or("?");
+            let primary_str = if t.is_primary { " *" } else { "" };
+            println!("     - {} ({}){}",
+                t.domain.cyan(), region_str, primary_str);
+        }
+    }
     if let Some(ref app) = app_filter {
         let svcs = resolve_services(&config, &app_filter, &service_filter);
         if !svcs.is_empty() {
@@ -122,35 +160,141 @@ pub async fn handle_deploy(
         println!("   Service: {}", svc.yellow());
     }
 
-    let deploy_path = &config.deploy_path;
+    // 2. 同步 App 记录到后端
+    let (_app_id, deployment_id) = sync_app_record(&config, &targets[0].domain).await;
 
-    // 2. 同步 App 记录到后端 (可选，失败不阻塞部署)
-    let (app_id, deployment_id) = sync_app_record(&config, &target).await;
+    // 3. 部署到所有节点
+    if targets.len() == 1 {
+        // 单节点：保持原有逻辑
+        let target = &targets[0].domain;
+        let deploy_path = &config.deploy_path;
 
-    // 3. 确保远程目录存在
-    println!("\n{}", "🔑 Connecting...".cyan());
-    ssh::execute_remote_command(&target, &format!("mkdir -p {}", deploy_path), None).await?;
+        println!("\n{}", "🔑 Connecting...".cyan());
+        ssh::execute_remote_command(target, &format!("mkdir -p {}", deploy_path), None).await?;
 
-    // 4. 执行部署
-    let deploy_result = execute_deployment(
-        &config, &target, &service_filter, &app_filter, restart_only, &env_vars,
-    ).await;
+        let deploy_result = execute_deployment(
+            &config, target, &service_filter, &app_filter, restart_only, &env_vars,
+        ).await;
 
-    // 5. 更新部署状态
-    if let (Some(_app_id), Some(deployment_id)) = (app_id, deployment_id) {
-        update_deployment_status(deployment_id, &deploy_result).await;
+        if let Some(deployment_id) = deployment_id {
+            update_deployment_status(deployment_id, &deploy_result).await;
+        }
+
+        deploy_result?;
+        println!("\n{} Deployed {} to {}", "✅".green(), app_name.green(), target.cyan());
+    } else if rolling {
+        // 滚动部署：顺序执行
+        let total = targets.len();
+        let mut success_count = 0;
+        let mut failed: Vec<String> = Vec::new();
+
+        for (i, t) in targets.iter().enumerate() {
+            let region_str = t.region.as_deref().unwrap_or("?");
+            println!("\n{} [{}/{}] Deploying to {} ({})...",
+                "🚀".cyan(), i + 1, total, t.domain.cyan(), region_str);
+
+            let deploy_path = &config.deploy_path;
+            if let Err(e) = ssh::execute_remote_command(&t.domain, &format!("mkdir -p {}", deploy_path), None).await {
+                println!("   {} {} ({}): {}", "✘".red(), t.domain, region_str, e);
+                failed.push(t.domain.clone());
+                continue;
+            }
+
+            match execute_deployment(&config, &t.domain, &service_filter, &app_filter, restart_only, &env_vars).await {
+                Ok(_) => {
+                    println!("   {} {} ({})", "✔".green(), t.domain.green(), region_str);
+                    success_count += 1;
+                }
+                Err(e) => {
+                    println!("   {} {} ({}): {}", "✘".red(), t.domain, region_str, e);
+                    failed.push(t.domain.clone());
+                }
+            }
+        }
+
+        print_deploy_summary(&app_name, success_count, &failed, deployment_id).await;
+        if !failed.is_empty() {
+            return Err(anyhow!("{} node(s) failed deployment", failed.len()));
+        }
+    } else {
+        // 并行部署
+        let total = targets.len();
+        println!("\n{} Deploying to {} nodes in parallel...", "🚀".cyan(), total);
+
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for t in targets {
+            let config = config.clone();
+            let sf = service_filter.clone();
+            let af = app_filter.clone();
+            let ev = env_vars.clone();
+            let domain = t.domain.clone();
+            let region = t.region.clone();
+
+            join_set.spawn(async move {
+                let deploy_path = &config.deploy_path;
+                // mkdir
+                if let Err(e) = ssh::execute_remote_command(&domain, &format!("mkdir -p {}", deploy_path), None).await {
+                    return (domain, region, Err(e));
+                }
+                let result = execute_deployment(&config, &domain, &sf, &af, restart_only, &ev).await;
+                (domain, region, result)
+            });
+        }
+
+        let mut success_count = 0;
+        let mut failed: Vec<String> = Vec::new();
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((domain, region, deploy_result)) => {
+                    let region_str = region.as_deref().unwrap_or("?");
+                    match deploy_result {
+                        Ok(_) => {
+                            println!("   {} {} ({})", "✔".green(), domain.green(), region_str);
+                            success_count += 1;
+                        }
+                        Err(e) => {
+                            println!("   {} {} ({}): {}", "✘".red(), domain, region_str, e);
+                            failed.push(domain);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("   {} join error: {}", "✘".red(), e);
+                    failed.push("unknown".to_string());
+                }
+            }
+        }
+
+        print_deploy_summary(&app_name, success_count, &failed, deployment_id).await;
+        if !failed.is_empty() {
+            return Err(anyhow!("{} node(s) failed deployment", failed.len()));
+        }
     }
 
-    // 6. 返回结果
-    deploy_result?;
-
-    println!(
-        "\n{} Deployed {} to {}",
-        "✅".green(),
-        app_name.green(),
-        target.cyan()
-    );
     Ok(())
+}
+
+/// 打印部署汇总并更新状态
+async fn print_deploy_summary(app_name: &str, success_count: usize, failed: &[String], deployment_id: Option<i64>) {
+    let total = success_count + failed.len();
+    if failed.is_empty() {
+        println!("\n{} Deployed {} to {}/{} nodes",
+            "✅".green(), app_name.green(), success_count, total);
+    } else {
+        println!("\n{} Deployed {} to {}/{} nodes ({} failed)",
+            "⚠️".yellow(), app_name.yellow(),
+            success_count, total, failed.len());
+    }
+
+    if let Some(did) = deployment_id {
+        let _status = if failed.is_empty() { "success" } else if success_count > 0 { "partial" } else { "failed" };
+        let result: Result<()> = if failed.is_empty() { Ok(()) } else {
+            Err(anyhow!("{} node(s) failed", failed.len()))
+        };
+        update_deployment_status(did, &result).await;
+    }
 }
 
 /// 同步 App 记录到后端，返回 (app_id, deployment_id)

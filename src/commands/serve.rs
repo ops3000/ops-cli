@@ -221,8 +221,41 @@ WantedBy=multi-user.target
 
 // --- Route handlers ---
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    // If auth is provided, return detailed health info
+    if check_auth(&state, &headers).is_ok() {
+        let mut all_running = true;
+        let mut container_count = 0;
+        for dir in &state.compose_dirs {
+            if let Ok(containers) = containers::list_containers(dir) {
+                for c in &containers {
+                    container_count += 1;
+                    if c.state != "running" {
+                        all_running = false;
+                    }
+                }
+            }
+        }
+        let status = if container_count == 0 {
+            "unknown"
+        } else if all_running {
+            "healthy"
+        } else {
+            "degraded"
+        };
+        Json(serde_json::json!({
+            "status": status,
+            "containers": container_count,
+            "all_running": all_running,
+            "version": env!("CARGO_PKG_VERSION"),
+        }))
+    } else {
+        // Basic health check (no auth required, for liveness probes)
+        Json(serde_json::json!({ "status": "ok" }))
+    }
 }
 
 async fn get_containers(
