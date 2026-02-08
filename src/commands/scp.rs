@@ -20,13 +20,13 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     let remote_path = target.path().map(|s| s.to_string()).unwrap_or_else(|| "/root/".to_string());
     let scp_destination = format!("root@{}:{}", full_domain, remote_path);
 
-    println!("Pushing {} to {}...", source.cyan(), scp_destination.cyan());
+    o_step!("Pushing {} to {}...", source.cyan(), scp_destination.cyan());
 
     // 2. 获取凭证
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
 
-    println!("Fetching access credentials...");
+    o_debug!("Fetching access credentials...");
 
     // Get CI key based on target type
     let private_key = match &target {
@@ -56,7 +56,8 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     let mut cmd = Command::new("scp");
     cmd.arg("-i").arg(key_path)
        .arg("-o").arg("StrictHostKeyChecking=no")
-       .arg("-o").arg("UserKnownHostsFile=/dev/null");
+       .arg("-o").arg("UserKnownHostsFile=/dev/null")
+       .arg("-o").arg("LogLevel=ERROR");
 
     // 如果源是目录，添加递归标志
     if Path::new(&source).is_dir() {
@@ -69,7 +70,7 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     let status = cmd.status().context("Failed to execute scp command")?;
 
     if status.success() {
-        println!("{}", "✔ File transfer successful.".green());
+        o_success!("{}", "✔ File transfer successful.".green());
     } else {
         return Err(anyhow::anyhow!("SCP command failed with status: {}", status));
     }

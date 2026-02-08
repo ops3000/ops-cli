@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::io::{self, Write};
 
 fn prompt_confirm(prompt: &str) -> Result<bool> {
-    print!("{} [y/N]: ", prompt);
+    o_print!("{} [y/N]: ", prompt);
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -36,38 +36,38 @@ pub async fn handle_set(
     }
 
     // Legacy local binding flow
-    println!("You are about to bind this server to:");
-    println!("  Project:     {}", target.project.cyan().bold());
-    println!("  Environment: {}", target.environment.cyan().bold());
+    o_step!("You are about to bind this server to:");
+    o_detail!("  Project:     {}", target.project.cyan().bold());
+    o_detail!("  Environment: {}", target.environment.cyan().bold());
     if let Some(ref r) = region {
-        println!("  Region:      {}", r.cyan());
+        o_detail!("  Region:      {}", r.cyan());
     }
     if let Some(ref z) = zone {
-        println!("  Zone:        {}", z.cyan());
+        o_detail!("  Zone:        {}", z.cyan());
     }
     if let Some(ref h) = hostname {
-        println!("  Hostname:    {}", h.cyan());
+        o_detail!("  Hostname:    {}", h.cyan());
     }
-    println!("  Full Domain: {}.{}.ops.autos", target.environment, target.project);
-    println!();
+    o_detail!("  Full Domain: {}.{}.ops.autos", target.environment, target.project);
+    o_detail!();
 
     if !prompt_confirm("Do you want to continue?")? {
-        println!("Operation cancelled.");
+        o_warn!("Operation cancelled.");
         return Ok(());
     }
 
     let mut force_reset = false;
-    println!();
-    println!("{}", "Tip: If you are having trouble with 'ops ssh' (invalid key format), please choose Yes below.".dimmed());
+    o_detail!();
+    o_detail!("{}", "Tip: If you are having trouble with 'ops ssh' (invalid key format), please choose Yes below.".dimmed());
     if prompt_confirm("Do you want to regenerate CI/CD SSH keys for this environment?")? {
         force_reset = true;
     }
 
-    println!("\nChecking local SSH key...");
+    o_step!("\nChecking local SSH key...");
     let pubkey = ssh::get_default_pubkey()?;
-    println!("{}", "✔ SSH key ready.".green());
+    o_success!("{}", "✔ SSH key ready.".green());
 
-    println!("Binding server...");
+    o_step!("Binding server...");
 
     let res = api::set_node(
         &token,
@@ -81,22 +81,22 @@ pub async fn handle_set(
         weight,
     ).await?;
 
-    println!("{}", format!("✔ {}", res.message).green());
-    println!("  Node ID:       {}", res.node_id);
-    println!("  Node Group ID: {}", res.node_group_id);
-    println!("  Domain:        {}", res.domain.cyan());
+    o_success!("{}", format!("✔ {}", res.message).green());
+    o_detail!("  Node ID:       {}", res.node_id);
+    o_detail!("  Node Group ID: {}", res.node_group_id);
+    o_detail!("  Domain:        {}", res.domain.cyan());
     if let Some(ref r) = res.region {
-        println!("  Region:        {}", r);
+        o_detail!("  Region:        {}", r);
     }
 
-    println!("Adding CI public key to ~/.ssh/authorized_keys...");
+    o_step!("Adding CI public key to ~/.ssh/authorized_keys...");
     ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
 
     if force_reset {
-        println!("{}", "✔ CI keys have been regenerated. Please try `ops ssh` again.".green());
+        o_success!("{}", "✔ CI keys have been regenerated. Please try `ops ssh` again.".green());
     }
 
-    println!("{}", "✔ Setup complete!".green());
+    o_success!("{}", "✔ Setup complete!".green());
     Ok(())
 }
 
@@ -115,7 +115,7 @@ async fn handle_remote_bind(
     let app_name = &target.environment;
     let project_name = &target.project;
 
-    println!("Binding node #{} to {}.{}...",
+    o_step!("Binding node #{} to {}.{}...",
         node_id.to_string().cyan(),
         app_name.cyan(),
         project_name.cyan()
@@ -130,16 +130,16 @@ async fn handle_remote_bind(
         weight,
     ).await?;
 
-    println!("{}", format!("✔ {}", result.message).green());
-    println!("  App ID:     {}", result.app_id);
-    println!("  Mode:       {}", result.mode);
-    println!("  Domain:     {}", result.domain.cyan());
+    o_success!("{}", format!("✔ {}", result.message).green());
+    o_detail!("  App ID:     {}", result.app_id);
+    o_detail!("  Mode:       {}", result.mode);
+    o_detail!("  Domain:     {}", result.domain.cyan());
 
     if let Some(group_id) = result.node_group_id {
-        println!("  Node Group: #{}", group_id);
+        o_detail!("  Node Group: #{}", group_id);
     }
     if let Some(total) = result.total_nodes {
-        println!("  Total Nodes: {}", total);
+        o_detail!("  Total Nodes: {}", total);
     }
 
     Ok(())

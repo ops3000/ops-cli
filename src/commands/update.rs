@@ -17,14 +17,14 @@ pub async fn handle_update() -> Result<()> {
 
     if let Ok(output) = status {
         if output.status.success() {
-            println!("{}", "Restarting ops-serve...".yellow());
+            o_step!("{}", "Restarting ops-serve...".yellow());
             let restart = std::process::Command::new("systemctl")
                 .args(["restart", "ops-serve"])
                 .status();
 
             if let Ok(s) = restart {
                 if s.success() {
-                    println!("{}", "✔ ops-serve restarted".green());
+                    o_success!("{}", "✔ ops-serve restarted".green());
                 }
             }
         }

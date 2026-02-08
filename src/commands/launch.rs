@@ -114,7 +114,7 @@ fn prompt_with_default(prompt: &str, default: &str, yes: bool) -> Result<String>
     if yes {
         return Ok(default.to_string());
     }
-    print!("  {} [{}]: ", prompt, default.dimmed());
+    o_print!("  {} [{}]: ", prompt, default.dimmed());
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -131,7 +131,7 @@ fn prompt_optional(prompt: &str, yes: bool) -> Result<String> {
     if yes {
         return Ok(String::new());
     }
-    print!("  {} ", prompt);
+    o_print!("  {} ", prompt);
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -143,7 +143,7 @@ fn prompt_confirm_yes(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
     }
-    print!("  {} [Y/n]: ", prompt);
+    o_print!("  {} [Y/n]: ", prompt);
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -156,7 +156,7 @@ fn prompt_confirm_no(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(false);
     }
-    print!("  {} [y/N]: ", prompt);
+    o_print!("  {} [y/N]: ", prompt);
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
@@ -264,55 +264,55 @@ fn generate_toml(cfg: &LaunchConfig) -> String {
 
 /// ops launch 主入口
 pub async fn handle_launch(output: String, yes: bool) -> Result<()> {
-    println!();
-    println!("{}", "OPS Launch".cyan().bold());
-    println!("{}", "══════════".cyan());
-    println!();
+    o_step!();
+    o_step!("{}", "OPS Launch".cyan().bold());
+    o_step!("{}", "══════════".cyan());
+    o_step!();
 
     // 1. 扫描项目
-    println!("{}", "Scanning project...".cyan());
+    o_step!("{}", "Scanning project...".cyan());
     let scan = scan_project();
 
     // 打印检测结果
     if !scan.compose_files.is_empty() {
-        println!(
+        o_detail!(
             "  {} {}",
             "✔ Detected:".green(),
             scan.compose_files.join(", ")
         );
     }
     if scan.has_dockerfile {
-        println!("  {} Dockerfile", "✔ Detected:".green());
+        o_detail!("  {} Dockerfile", "✔ Detected:".green());
     }
     if scan.has_git {
         if let Some(ref remote) = scan.git_remote {
-            println!("  {} git remote: {}", "✔ Detected:".green(), remote);
+            o_detail!("  {} git remote: {}", "✔ Detected:".green(), remote);
         } else {
-            println!("  {} git repository (no remote)", "✔ Detected:".green());
+            o_detail!("  {} git repository (no remote)", "✔ Detected:".green());
         }
     }
     if scan.has_env_file {
-        println!("  {} .env", "✔ Detected:".green());
+        o_detail!("  {} .env", "✔ Detected:".green());
     }
     if let Some(ref lang) = scan.language {
-        println!("  {} Language: {}", "✔ Detected:".green(), lang);
+        o_detail!("  {} Language: {}", "✔ Detected:".green(), lang);
     }
     if !scan.sync_candidates.is_empty() {
-        println!(
+        o_detail!(
             "  {} Config files: {}",
             "✔ Detected:".green(),
             scan.sync_candidates.join(", ")
         );
     }
-    println!();
+    o_detail!();
 
     // 2. 检查已有 ops.toml
     if Path::new(&output).exists() && !yes {
         if !prompt_confirm_no(&format!("{} already exists. Overwrite?", output), false)? {
-            println!("Aborted.");
+            o_warn!("Aborted.");
             return Ok(());
         }
-        println!();
+        o_detail!();
     }
 
     // 3. 交互提问
@@ -339,10 +339,10 @@ pub async fn handle_launch(output: String, yes: bool) -> Result<()> {
 
     // Compose files
     let compose_files = if !scan.compose_files.is_empty() {
-        println!();
-        println!("  Found docker-compose files:");
+        o_detail!();
+        o_detail!("  Found docker-compose files:");
         for (i, f) in scan.compose_files.iter().enumerate() {
-            println!("    {}. {}", i + 1, f);
+            o_detail!("    {}. {}", i + 1, f);
         }
         if prompt_confirm_yes("Use these compose files?", yes)? {
             scan.compose_files.clone()
@@ -355,7 +355,7 @@ pub async fn handle_launch(output: String, yes: bool) -> Result<()> {
 
     // Registry (image mode only)
     let use_registry = if source == "image" {
-        println!();
+        o_detail!();
         prompt_confirm_no("Configure container registry (ghcr.io)?", yes)?
     } else {
         false
@@ -386,7 +386,7 @@ pub async fn handle_launch(output: String, yes: bool) -> Result<()> {
     };
 
     // Health check
-    println!();
+    o_detail!();
     let health_url = prompt_optional(
         "Health check URL (enter to skip):",
         yes,
@@ -418,16 +418,16 @@ pub async fn handle_launch(output: String, yes: bool) -> Result<()> {
     fs::write(&output, &content)
         .with_context(|| format!("Failed to write {}", output))?;
 
-    println!();
-    println!("{} Generated {}", "✔".green(), output.cyan());
-    println!();
-    println!("{}", "Next steps:".cyan().bold());
-    println!("  {}          # deploy all services", "ops deploy".cyan());
-    println!(
+    o_result!();
+    o_result!("{} Generated {}", "✔".green(), output.cyan());
+    o_detail!();
+    o_detail!("{}", "Next steps:".cyan().bold());
+    o_detail!("  {}          # deploy all services", "ops deploy".cyan());
+    o_detail!(
         "  {}  # deploy a specific app group",
         "ops deploy --app <name>".cyan()
     );
-    println!(
+    o_detail!(
         "  {}          # check deployment status",
         "ops status".cyan()
     );

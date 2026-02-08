@@ -115,6 +115,7 @@ pub struct BuildConfig {
 pub struct BuildGitConfig {
     pub repo: String,
     pub ssh_key: Option<String>,
+    pub token: Option<String>,                  // HTTPS token, 支持 $ENV_VAR
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -11,7 +11,7 @@ pub async fn handle_ip(target_str: String) -> Result<()> {
     let target = utils::parse_target_v2(&target_str)?;
     let full_domain = target.domain();
 
-    println!("Resolving IP for {}...", full_domain.cyan());
+    o_step!("Resolving IP for {}...", full_domain.cyan());
 
     // 使用标准库进行 DNS 查询
     // (domain, 0) 是一个技巧，表示任何端口

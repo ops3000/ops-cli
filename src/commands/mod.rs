@@ -14,6 +14,7 @@ pub mod token;
 pub mod logout;
 pub mod env;
 pub mod build;
+pub mod common;
 pub mod deploy;
 pub mod status;
 pub mod logs;

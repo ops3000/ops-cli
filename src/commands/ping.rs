@@ -11,7 +11,7 @@ pub async fn handle_ping(target_str: String) -> Result<()> {
     let target = utils::parse_target_v2(&target_str)?;
     let full_domain = target.domain();
 
-    println!("Pinging {}...", full_domain.cyan());
+    o_step!("Pinging {}...", full_domain.cyan());
 
     // 在不同操作系统上，ping 命令的参数可能略有不同
     // 但通常直接 ping 域名是通用的

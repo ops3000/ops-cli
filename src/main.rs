@@ -2,6 +2,9 @@ use clap::{Parser, Subcommand};
 use anyhow::Result;
 use colored::Colorize;
 
+#[macro_use]
+mod output;
+
 mod api;
 mod commands;
 mod config;
@@ -15,6 +18,14 @@ mod update;
 #[command(author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
+    /// Suppress all output except errors and final results
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    /// Show verbose/debug output
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -161,6 +172,9 @@ enum Commands {
         /// Deploy nodes sequentially instead of in parallel
         #[arg(long)]
         rolling: bool,
+        /// Force clean deploy: remove existing containers before starting
+        #[arg(long)]
+        force: bool,
     },
 
     /// Remote build on a persistent build node (like Depot.dev)
@@ -180,6 +194,9 @@ enum Commands {
         /// Skip pushing images to registry
         #[arg(long)]
         no_push: bool,
+        /// Number of parallel image builds (default: 5)
+        #[arg(short, long, default_value = "5")]
+        jobs: u8,
     },
 
     /// Show status of deployed services (reads ops.toml)
@@ -377,7 +394,18 @@ enum PoolCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
     let cli = Cli::parse();
+
+    // Initialize output verbosity
+    let verbosity = if cli.quiet {
+        output::Verbosity::Quiet
+    } else if cli.verbose {
+        output::Verbosity::Verbose
+    } else {
+        output::Verbosity::Normal
+    };
+    output::init(verbosity);
 
     // Auto-update check (skip for certain commands)
     if !matches!(
@@ -449,10 +477,10 @@ async fn main() -> Result<()> {
         
         Commands::Launch { output, yes } =>
             commands::launch::handle_launch(output.clone(), *yes).await,
-        Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling } =>
-            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling).await,
-        Commands::Build { file, git_ref, service, tag, no_push } =>
-            commands::build::handle_build(file.clone(), git_ref.clone(), service.clone(), tag.clone(), *no_push).await,
+        Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling, force } =>
+            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling, *force).await,
+        Commands::Build { file, git_ref, service, tag, no_push, jobs } =>
+            commands::build::handle_build(file.clone(), git_ref.clone(), service.clone(), tag.clone(), *no_push, *jobs).await,
         Commands::Status { file } =>
             commands::status::handle_status(file.clone()).await,
         Commands::Logs { service, file, tail, follow } =>
@@ -488,12 +516,12 @@ async fn main() -> Result<()> {
 
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
-            println!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
+            o_detail!("ops-cli version: {}", env!("CARGO_PKG_VERSION").cyan());
             tokio::task::spawn_blocking(|| {
                 if let Ok(Some(v)) = update::check_for_update(false) {
-                    println!("Latest version:  {}", v.green());
+                    o_detail!("Latest version:  {}", v.green());
                 } else {
-                    println!("You are on the latest version.");
+                    o_detail!("You are on the latest version.");
                 }
             }).await?;
             Ok(())
@@ -501,7 +529,7 @@ async fn main() -> Result<()> {
     };
 
     if let Err(e) = result {
-        eprintln!("{}: {}", "Error".red().bold(), e);
+        o_error!("{}: {}", "Error".red().bold(), e);
         std::process::exit(1);
     }
     

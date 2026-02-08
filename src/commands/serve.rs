@@ -67,7 +67,7 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
-    println!(
+    o_success!(
         "{} ops serve listening on {}",
         "✓".green(),
         addr.cyan()
@@ -124,7 +124,7 @@ WantedBy=multi-user.target
     let service_path = "/etc/systemd/system/ops-serve.service";
     std::fs::write(service_path, service)?;
 
-    println!("{} Wrote {}", "✓".green(), service_path);
+    o_success!("{} Wrote {}", "✓".green(), service_path);
 
     let cmds = [
         ("systemctl daemon-reload", "Reloaded systemd"),
@@ -137,9 +137,9 @@ WantedBy=multi-user.target
             .args(["-c", cmd])
             .status()?;
         if status.success() {
-            println!("{} {}", "✓".green(), msg);
+            o_success!("{} {}", "✓".green(), msg);
         } else {
-            eprintln!("{} Failed: {}", "✗".red(), cmd);
+            o_error!("{} Failed: {}", "✗".red(), cmd);
         }
     }
 
@@ -161,9 +161,9 @@ WantedBy=multi-user.target
                 .args(["-c", &ssl_cmd])
                 .status()?;
             if status.success() {
-                println!("{} Generated self-signed SSL certificate", "✓".green());
+                o_success!("{} Generated self-signed SSL certificate", "✓".green());
             } else {
-                eprintln!("{} Failed to generate SSL certificate", "✗".red());
+                o_error!("{} Failed to generate SSL certificate", "✗".red());
             }
         }
 
@@ -197,7 +197,7 @@ WantedBy=multi-user.target
         };
 
         std::fs::write(nginx_path, &nginx_conf)?;
-        println!("{} Wrote {}", "✓".green(), nginx_path);
+        o_success!("{} Wrote {}", "✓".green(), nginx_path);
 
         let nginx_cmds = [
             ("nginx -t", "Nginx config test passed"),
@@ -209,9 +209,9 @@ WantedBy=multi-user.target
                 .args(["-c", cmd])
                 .status()?;
             if status.success() {
-                println!("{} {}", "✓".green(), msg);
+                o_success!("{} {}", "✓".green(), msg);
             } else {
-                eprintln!("{} Failed: {}", "✗".red(), cmd);
+                o_error!("{} Failed: {}", "✗".red(), cmd);
             }
         }
     }

@@ -43,8 +43,26 @@ All commands are invoked as `ops <command>`.
 | ------------------------------------ | ---------------------------------- |
 | [`set`](deployment.md#set)          | Bind a server to an app            |
 | [`deploy`](deployment.md#deploy)    | Deploy services from ops.toml      |
+| [`build`](build.md#build)          | Remote build on a build node       |
 | [`status`](deployment.md#status)    | Show deployed service status       |
 | [`logs`](deployment.md#logs)        | View service logs                  |
+
+## Custom Domains
+
+| Command                                    | Description                        |
+| ------------------------------------------ | ---------------------------------- |
+| [`domain add`](domain.md#domain-add)      | Add a custom domain                |
+| [`domain list`](domain.md#domain-list)    | List custom domains                |
+| [`domain remove`](domain.md#domain-remove)| Remove a custom domain             |
+
+## Resource Pool
+
+| Command                                        | Description                        |
+| ---------------------------------------------- | ---------------------------------- |
+| [`pool status`](pool.md#pool-status)          | Show pool status                   |
+| [`pool strategy`](pool.md#pool-strategy)      | Change load balancing strategy     |
+| [`pool drain`](pool.md#pool-drain)            | Drain a node                       |
+| [`pool undrain`](pool.md#pool-undrain)        | Restore a drained node             |
 
 ## SSH & File Transfer
 

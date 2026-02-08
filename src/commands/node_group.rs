@@ -12,28 +12,28 @@ pub async fn handle_create(
     let cfg = config::load_config().context("Could not load config. Please log in with `ops login`.")?;
     let token = cfg.token.context("You are not logged in. Please run `ops login` first.")?;
 
-    println!("Creating node group...");
-    println!("  Project:     {}", project.cyan());
-    println!("  Environment: {}", env.cyan());
+    o_step!("Creating node group...");
+    o_detail!("  Project:     {}", project.cyan());
+    o_detail!("  Environment: {}", env.cyan());
     if let Some(ref n) = name {
-        println!("  Name:        {}", n.cyan());
+        o_detail!("  Name:        {}", n.cyan());
     }
-    println!("  Strategy:    {}", strategy.cyan());
+    o_detail!("  Strategy:    {}", strategy.cyan());
 
     let res = api::create_node_group(&token, &project, &env, name.as_deref(), &strategy).await?;
 
-    println!("{}", format!("✔ {}", res.message).green());
-    println!();
-    println!("Node Group Details:");
-    println!("  ID:          {}", res.node_group.id);
-    println!("  Name:        {}", res.node_group.name);
-    println!("  Environment: {}", res.node_group.environment);
-    println!("  Strategy:    {}", res.node_group.lb_strategy);
+    o_success!("{}", format!("✔ {}", res.message).green());
+    o_detail!();
+    o_step!("Node Group Details:");
+    o_detail!("  ID:          {}", res.node_group.id);
+    o_detail!("  Name:        {}", res.node_group.name);
+    o_detail!("  Environment: {}", res.node_group.environment);
+    o_detail!("  Strategy:    {}", res.node_group.lb_strategy);
 
-    println!();
-    println!("{}", "Next steps:".yellow());
-    println!("  1. SSH into your server(s)");
-    println!("  2. Run: ops set {}.{} --region <region>", env, project);
+    o_detail!();
+    o_step!("{}", "Next steps:".yellow());
+    o_detail!("  1. SSH into your server(s)");
+    o_detail!("  2. Run: ops set {}.{} --region <region>", env, project);
 
     Ok(())
 }
@@ -46,14 +46,14 @@ pub async fn handle_list(project: Option<String>) -> Result<()> {
     let res = api::list_node_groups(&token, project.as_deref()).await?;
 
     if res.node_groups.is_empty() {
-        println!("{}", "No node groups found.".yellow());
-        println!();
-        println!("Create one with: ops node-group create --project <name> --env <environment>");
+        o_warn!("{}", "No node groups found.".yellow());
+        o_detail!();
+        o_detail!("Create one with: ops node-group create --project <name> --env <environment>");
         return Ok(());
     }
 
-    println!("{}", "Node Groups:".bold());
-    println!();
+    o_step!("{}", "Node Groups:".bold());
+    o_detail!();
 
     for group in res.node_groups {
         let project_name = group.project_name.unwrap_or_else(|| "-".to_string());
@@ -71,7 +71,7 @@ pub async fn handle_list(project: Option<String>) -> Result<()> {
             "●".red()
         };
 
-        println!(
+        o_detail!(
             "  {} {} {} ({}) - {} nodes ({} healthy) [{}]",
             status,
             format!("#{}", group.id).dimmed(),
@@ -83,8 +83,8 @@ pub async fn handle_list(project: Option<String>) -> Result<()> {
         );
     }
 
-    println!();
-    println!("{}", "Use 'ops node-group show <id>' for details".dimmed());
+    o_detail!();
+    o_detail!("{}", "Use 'ops node-group show <id>' for details".dimmed());
 
     Ok(())
 }
@@ -96,34 +96,34 @@ pub async fn handle_show(id: i64) -> Result<()> {
 
     let group = api::get_node_group(&token, id).await?;
 
-    println!("{}", format!("Node Group: {}", group.name).bold());
-    println!();
-    println!("  ID:          {}", group.id);
-    println!("  Project:     {}", group.project_name);
-    println!("  Environment: {}", group.environment);
-    println!("  Strategy:    {}", group.lb_strategy);
+    o_step!("{}", format!("Node Group: {}", group.name).bold());
+    o_detail!();
+    o_detail!("  ID:          {}", group.id);
+    o_detail!("  Project:     {}", group.project_name);
+    o_detail!("  Environment: {}", group.environment);
+    o_detail!("  Strategy:    {}", group.lb_strategy);
 
     // Health check config
     if let Some(hc) = group.health_config {
-        println!();
-        println!("{}", "Health Check Config:".bold());
-        println!("  Type:      {}", hc.check_type);
-        println!("  Endpoint:  {}", hc.endpoint);
-        println!("  Interval:  {}s", hc.interval_seconds);
-        println!("  Timeout:   {}s", hc.timeout_seconds);
-        println!("  Thresholds: {} unhealthy / {} healthy", hc.unhealthy_threshold, hc.healthy_threshold);
+        o_detail!();
+        o_step!("{}", "Health Check Config:".bold());
+        o_detail!("  Type:      {}", hc.check_type);
+        o_detail!("  Endpoint:  {}", hc.endpoint);
+        o_detail!("  Interval:  {}s", hc.interval_seconds);
+        o_detail!("  Timeout:   {}s", hc.timeout_seconds);
+        o_detail!("  Thresholds: {} unhealthy / {} healthy", hc.unhealthy_threshold, hc.healthy_threshold);
     }
 
-    println!();
-    println!("{}", format!("Nodes ({}):", group.nodes.len()).bold());
+    o_detail!();
+    o_step!("{}", format!("Nodes ({}):", group.nodes.len()).bold());
 
     if group.nodes.is_empty() {
-        println!("  {}", "No nodes in this group.".dimmed());
-        println!();
-        println!("{}", "Add nodes by running on your server:".yellow());
-        println!("  ops set {}.{} --region <region>", group.environment, group.project_name);
+        o_detail!("  {}", "No nodes in this group.".dimmed());
+        o_detail!();
+        o_step!("{}", "Add nodes by running on your server:".yellow());
+        o_detail!("  ops set {}.{} --region <region>", group.environment, group.project_name);
     } else {
-        println!();
+        o_detail!();
         for node in group.nodes {
             let status_icon = match node.status.as_str() {
                 "healthy" => "●".green(),
@@ -141,7 +141,7 @@ pub async fn handle_show(id: i64) -> Result<()> {
                 "serve ✗".red()
             };
 
-            println!(
+            o_detail!(
                 "  {} {} ({}) - {} zone:{} weight:{} [{}]",
                 status_icon,
                 hostname_str.cyan(),
@@ -151,9 +151,9 @@ pub async fn handle_show(id: i64) -> Result<()> {
                 node.weight,
                 serve_status
             );
-            println!("      Domain: {}", node.domain.dimmed());
+            o_detail!("      Domain: {}", node.domain.dimmed());
             if let Some(last_check) = node.last_health_check {
-                println!("      Last check: {}", last_check.dimmed());
+                o_detail!("      Last check: {}", last_check.dimmed());
             }
         }
     }
@@ -170,24 +170,24 @@ pub async fn handle_nodes(target_str: String) -> Result<()> {
 
     let res = api::get_nodes_in_env(&token, &target.project, &target.environment).await?;
 
-    println!(
+    o_step!(
         "{} ({}.{}.ops.autos)",
         "Node Group".bold(),
         target.environment.cyan(),
         target.project.cyan()
     );
-    println!();
-    println!("  Name:     {}", res.node_group.name);
-    println!("  Strategy: {}", res.node_group.lb_strategy);
-    println!();
+    o_detail!();
+    o_detail!("  Name:     {}", res.node_group.name);
+    o_detail!("  Strategy: {}", res.node_group.lb_strategy);
+    o_detail!();
 
     if res.nodes.is_empty() {
-        println!("{}", "No nodes found.".yellow());
+        o_warn!("{}", "No nodes found.".yellow());
         return Ok(());
     }
 
-    println!("{}", format!("Nodes ({}):", res.nodes.len()).bold());
-    println!();
+    o_step!("{}", format!("Nodes ({}):", res.nodes.len()).bold());
+    o_detail!();
 
     for node in res.nodes {
         let status_icon = match node.status.as_str() {
@@ -200,7 +200,7 @@ pub async fn handle_nodes(target_str: String) -> Result<()> {
         let region_str = node.region.as_deref().unwrap_or("-");
         let hostname_str = node.hostname.as_deref().unwrap_or(&node.ip_address);
 
-        println!(
+        o_detail!(
             "  {} {} ({}) region:{} weight:{}",
             status_icon,
             hostname_str.cyan(),

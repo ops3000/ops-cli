@@ -17,28 +17,28 @@ pub async fn handle_status(target: String) -> Result<()> {
 
     let (project, app) = parse_target(&target)?;
 
-    println!("{} Pool status for {}\n", "🏊".cyan(), target.green());
+    o_step!("{} Pool status for {}\n", "🏊".cyan(), target.green());
 
     let resp = api::get_app_deploy_targets(&token, &project, &app).await?;
 
-    println!("  Mode:     {}", resp.mode.cyan());
+    o_detail!("  Mode:     {}", resp.mode.cyan());
     if let Some(ref strategy) = resp.lb_strategy {
-        println!("  Strategy: {}", strategy.cyan());
+        o_detail!("  Strategy: {}", strategy.cyan());
     }
     if let Some(gid) = resp.node_group_id {
-        println!("  Group ID: {}", gid.to_string().cyan());
+        o_detail!("  Group ID: {}", gid.to_string().cyan());
     }
-    println!();
+    o_detail!("");
 
     if resp.targets.is_empty() {
-        println!("  No nodes bound to this app.");
+        o_detail!("  No nodes bound to this app.");
         return Ok(());
     }
 
     // Table header
-    println!("  {:<8} {:<28} {:<16} {:<14} {:<10} {:<8}",
+    o_detail!("  {:<8} {:<28} {:<16} {:<14} {:<10} {:<8}",
         "ID", "Domain", "IP", "Region", "Status", "Primary");
-    println!("  {}", "-".repeat(84));
+    o_detail!("  {}", "-".repeat(84));
 
     for t in &resp.targets {
         let status_colored = match t.status.as_str() {
@@ -49,13 +49,13 @@ pub async fn handle_status(target: String) -> Result<()> {
         let primary = if t.is_primary { "yes".green() } else { "-".normal() };
         let region = t.region.as_deref().unwrap_or("-");
 
-        println!("  {:<8} {:<28} {:<16} {:<14} {:<10} {:<8}",
+        o_detail!("  {:<8} {:<28} {:<16} {:<14} {:<10} {:<8}",
             t.node_id, t.domain, t.ip_address, region, status_colored, primary);
     }
 
     let healthy = resp.targets.iter().filter(|t| t.status == "healthy").count();
     let total = resp.targets.len();
-    println!("\n  {}/{} nodes healthy", healthy.to_string().green(), total);
+    o_result!("\n  {}/{} nodes healthy", healthy.to_string().green(), total);
 
     Ok(())
 }
@@ -76,11 +76,11 @@ pub async fn handle_strategy(target: String, strategy: String) -> Result<()> {
     let group_id = resp.node_group_id
         .context("App is in single-node mode. Bind a second node to enable pool mode.")?;
 
-    println!("{} Updating strategy for {} to {}...", "🔄".cyan(), target.green(), strategy.yellow());
+    o_step!("{} Updating strategy for {} to {}...", "🔄".cyan(), target.green(), strategy.yellow());
 
     api::update_node_group_strategy(&token, group_id, &strategy).await?;
 
-    println!("{} Strategy updated to {}", "✔".green(), strategy.green());
+    o_success!("{} Strategy updated to {}", "✔".green(), strategy.green());
     Ok(())
 }
 
@@ -95,11 +95,11 @@ pub async fn handle_drain(target: String, node_id: u64) -> Result<()> {
     let group_id = resp.node_group_id
         .context("App is in single-node mode. Cannot drain.")?;
 
-    println!("{} Draining node {} from {}...", "🚰".cyan(), node_id.to_string().yellow(), target.green());
+    o_step!("{} Draining node {} from {}...", "🚰".cyan(), node_id.to_string().yellow(), target.green());
 
     api::drain_node(&token, group_id, node_id).await?;
 
-    println!("{} Node {} is now draining (no new traffic will be routed)", "✔".green(), node_id);
+    o_success!("{} Node {} is now draining (no new traffic will be routed)", "✔".green(), node_id);
     Ok(())
 }
 
@@ -114,10 +114,10 @@ pub async fn handle_undrain(target: String, node_id: u64) -> Result<()> {
     let group_id = resp.node_group_id
         .context("App is in single-node mode. Cannot undrain.")?;
 
-    println!("{} Restoring node {} in {}...", "🔄".cyan(), node_id.to_string().yellow(), target.green());
+    o_step!("{} Restoring node {} in {}...", "🔄".cyan(), node_id.to_string().yellow(), target.green());
 
     api::undrain_node(&token, group_id, node_id).await?;
 
-    println!("{} Node {} is back in rotation", "✔".green(), node_id);
+    o_success!("{} Node {} is back in rotation", "✔".green(), node_id);
     Ok(())
 }

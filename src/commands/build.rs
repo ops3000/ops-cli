@@ -1,32 +1,64 @@
+use crate::commands::common::resolve_env_value;
 use crate::commands::deploy::load_ops_toml;
-use crate::commands::ssh;
+use crate::commands::ssh::SshSession;
 use crate::types::{BuildConfig, OpsToml};
 use crate::{api, config};
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::fs;
+use std::path::Path;
 use std::time::Instant;
 
-/// 解析 "$ENV_VAR" → 读环境变量值
-fn resolve_env_value(val: &str) -> Result<String> {
-    if val.starts_with('$') {
-        std::env::var(&val[1..])
-            .with_context(|| format!("Environment variable {} not set", val))
-    } else {
-        Ok(val.to_string())
-    }
+/// 上传 SSH key 到构建节点，按项目隔离: ~/.ssh/{project_name}/{key_filename}
+fn setup_build_ssh_key(session: &SshSession, local_key_path: &str, project_name: &str) -> Result<()> {
+    let key_content = fs::read_to_string(local_key_path)
+        .with_context(|| format!("Cannot read SSH key: {}", local_key_path))?;
+
+    let key_filename = Path::new(local_key_path)
+        .file_name()
+        .context("Invalid key path")?
+        .to_str()
+        .context("Invalid key filename")?;
+
+    let remote_key_dir = format!("~/.ssh/{}", project_name);
+    let remote_key_path = format!("{}/{}", remote_key_dir, key_filename);
+
+    // 上传 key
+    session.exec(
+        &format!("mkdir -p {} && cat > {} && chmod 600 {}", remote_key_dir, remote_key_path, remote_key_path),
+        Some(&key_content),
+    )?;
+
+    // 配置 ~/.ssh/config
+    session.exec(
+        &format!(
+            r#"grep -q '{}' ~/.ssh/config 2>/dev/null || cat >> ~/.ssh/config << 'SSHEOF'
+Host github.com
+  Hostname ssh.github.com
+  Port 443
+  User git
+  IdentityFile {}
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+SSHEOF
+chmod 600 ~/.ssh/config"#,
+            remote_key_path, remote_key_path
+        ),
+        None,
+    )?;
+
+    o_success!("   {} ({})", "✔ SSH key configured".green(), remote_key_path);
+    Ok(())
 }
 
 /// 解析构建节点，优先级：build.node → config.target → API 自动查询
 async fn resolve_build_node(config: &OpsToml, build: &BuildConfig) -> Result<String> {
-    // 1. 显式指定的 node ID
     if let Some(id) = build.node {
         return Ok(id.to_string());
     }
-    // 2. ops.toml 顶层 target
     if let Some(ref t) = config.target {
         return Ok(t.clone());
     }
-    // 3. 从 API 自动查询项目绑定的节点
     let project = config.project.as_ref()
         .or(config.app.as_ref())
         .context("Cannot resolve build node: set build.node, target, or project in ops.toml")?;
@@ -47,43 +79,49 @@ pub async fn handle_build(
     service_filter: Option<String>,
     tag: Option<String>,
     no_push: bool,
+    jobs: u8,
 ) -> Result<()> {
     let total_start = Instant::now();
+    let jobs = jobs.max(1) as usize;
 
     // 1. 加载配置
-    println!("{}", "📦 Reading ops.toml [build]...".cyan());
+    o_step!("{}", "📦 Reading ops.toml [build]...".cyan());
     let config = load_ops_toml(&file)?;
     let build = config.build.as_ref()
         .context("ops.toml missing [build] section. Add a [build] section to enable remote builds.")?;
 
     let node = resolve_build_node(&config, build).await?;
-    println!("   Node: {}", node.cyan());
-    println!("   Path: {}", build.path.green());
-    println!("   Command: {}", build.command.yellow());
+    o_detail!("   Node: {}", node.cyan());
+    o_detail!("   Path: {}", build.path.green());
+    o_detail!("   Command: {}", build.command.yellow());
 
-    // 2. 确保远程目录存在
-    println!("\n{}", "🔑 Connecting to build node...".cyan());
-    ssh::execute_remote_command(&node, &format!("mkdir -p {}", build.path), None).await?;
+    // 2. 建立 SSH 会话（只 fetch 一次 CI key）
+    o_step!("\n{}", "🔑 Connecting to build node...".cyan());
+    let session = SshSession::connect(&node).await?;
+    session.exec(&format!("mkdir -p {}", build.path), None)?;
 
     // 3. 同步代码
-    sync_code(build, &node, &git_ref).await?;
+    let project_name = config.project.as_ref()
+        .or(config.app.as_ref())
+        .context("ops.toml must have 'project' or 'app'")?;
+    sync_code(build, &session, &node, &git_ref, project_name).await?;
 
     // 4. 执行构建命令
-    println!("\n{}", "🔨 Running build...".cyan());
+    o_step!("\n{}", "🔨 Running build...".cyan());
     let build_start = Instant::now();
-    let build_cmd = format!("cd {} && {}", build.path, build.command);
-    ssh::execute_remote_command(&node, &build_cmd, None).await?;
+    let build_cmd = format!("source $HOME/.cargo/env 2>/dev/null; cd {} && {}", build.path, build.command);
+    session.exec(&build_cmd, None)?;
     let build_duration = build_start.elapsed();
-    println!("   {} ({})", "✔ Build complete".green(), format_duration(build_duration));
+    o_success!("   {} ({})", "✔ Build complete".green(), format_duration(build_duration));
 
     // 5. 构建并推送 Docker 镜像（如果配置了 [build.image]）
     if let Some(image_config) = &build.image {
-        build_and_push_images(build, &node, image_config, &service_filter, &tag, no_push).await?;
+        build_and_push_images(build, &session, image_config, &service_filter, &tag, no_push, jobs)?;
     }
 
     // 6. 输出总结
     let total_duration = total_start.elapsed();
-    println!(
+    o_result!(
         "\n{} Build finished in {}",
         "✅".green(),
         format_duration(total_duration).cyan(),
@@ -93,10 +131,10 @@ pub async fn handle_build(
 }
 
 /// 同步代码到构建节点
-async fn sync_code(build: &BuildConfig, node: &str, git_ref: &Option<String>) -> Result<()> {
+async fn sync_code(build: &BuildConfig, session: &SshSession, node: &str, git_ref: &Option<String>, project_name: &str) -> Result<()> {
     match build.source.as_str() {
         "git" => {
-            println!("\n{}", "📤 Syncing code (git)...".cyan());
+            o_step!("\n{}", "📤 Syncing code (git)...".cyan());
             let git = build.git.as_ref()
                 .context("build.source='git' requires [build.git] section")?;
 
@@ -104,145 +142,79 @@ async fn sync_code(build: &BuildConfig, node: &str, git_ref: &Option<String>) ->
                 .or(build.branch.as_deref())
                 .unwrap_or("main");
 
+            // 配置认证（如果需要）
+            if let Some(key_path) = &git.ssh_key {
+                let expanded = shellexpand::tilde(key_path).to_string();
+                setup_build_ssh_key(session, &expanded, project_name)?;
+            }
+
             // 检查远程是否已有 .git 目录
             let check = format!(
                 "test -d {}/.git && echo 'exists' || echo 'missing'",
                 build.path
             );
-            let output = ssh::execute_remote_command_with_output(node, &check).await?;
+            let output = session.exec_output(&check)?;
             let output_str = String::from_utf8_lossy(&output).trim().to_string();
 
+            // 构建 clone URL（token 方式需要注入到 URL）
+            let repo_url = if let Some(token_val) = &git.token {
+                let token = resolve_env_value(token_val)?;
+                let https_url = git.repo
+                    .replace("git@github.com:", "https://github.com/")
+                    .replace(".git", "");
+                format!("https://x-access-token:{}@{}", token, https_url.trim_start_matches("https://"))
+            } else {
+                git.repo.clone()
+            };
+
             if output_str == "exists" {
-                // 已有仓库 → fetch + checkout
                 let cmd = if git_ref.is_some() {
-                    // 指定了具体 ref（如 commit SHA）→ fetch all + checkout
                     format!(
                         "cd {} && git fetch origin && git checkout {} && git reset --hard {}",
                         build.path, ref_or_branch, ref_or_branch
                     )
                 } else {
-                    // 默认分支 → pull
                     format!(
                         "cd {} && git fetch origin && git checkout {} && git pull origin {}",
                         build.path, ref_or_branch, ref_or_branch
                     )
                 };
-                ssh::execute_remote_command(node, &cmd, None).await?;
+                session.exec(&cmd, None)?;
             } else {
-                // 初次 clone
-                if let Some(key_path) = &git.ssh_key {
-                    let expanded = shellexpand::tilde(key_path).to_string();
-                    setup_deploy_key(node, &expanded).await?;
-                }
+                let ssh_opts = if git.token.is_none() && git.ssh_key.is_none() {
+                    "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' "
+                } else if git.token.is_some() {
+                    ""
+                } else {
+                    "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' "
+                };
                 let cmd = format!(
-                    "GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=no' git clone {} {} && cd {} && git checkout {}",
-                    git.repo, build.path, build.path, ref_or_branch
+                    "{}git clone {} {} && cd {} && git checkout {}",
+                    ssh_opts, repo_url, build.path, build.path, ref_or_branch
                 );
-                ssh::execute_remote_command(node, &cmd, None).await?;
+                session.exec(&cmd, None)?;
             }
-            println!("   {} (ref: {})", "✔ Code synced".green(), ref_or_branch.yellow());
+            o_success!("   {} (ref: {})", "✔ Code synced".green(), ref_or_branch.yellow());
         }
         "push" => {
-            println!("\n{}", "📤 Syncing code (rsync)...".cyan());
-            // 使用 rsync 推送本地文件到构建节点
-            rsync_push_to_build(node, &build.path).await?;
-            println!("   {}", "✔ Code synced".green());
+            o_step!("\n{}", "📤 Syncing code (rsync)...".cyan());
+            session.rsync_push(&build.path)?;
+            o_success!("   {}", "✔ Code synced".green());
         }
         other => return Err(anyhow::anyhow!("Unknown build source: {}", other)),
     }
     Ok(())
 }
 
-/// 上传 deploy key 到服务器并配置 SSH
-async fn setup_deploy_key(target: &str, local_key_path: &str) -> Result<()> {
-    let key_content = std::fs::read_to_string(local_key_path)
-        .with_context(|| format!("Cannot read deploy key: {}", local_key_path))?;
-
-    ssh::execute_remote_command(
-        target,
-        "mkdir -p ~/.ssh && cat > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key",
-        Some(&key_content),
-    ).await?;
-
-    ssh::execute_remote_command(
-        target,
-        r#"grep -q 'deploy_key' ~/.ssh/config 2>/dev/null || cat >> ~/.ssh/config << 'SSHEOF'
-Host github.com
-  IdentityFile ~/.ssh/deploy_key
-  StrictHostKeyChecking no
-SSHEOF
-chmod 600 ~/.ssh/config"#,
-        None,
-    ).await?;
-
-    println!("   {}", "✔ Deploy key configured".green());
-    Ok(())
-}
-
-/// rsync 本地代码到构建节点
-async fn rsync_push_to_build(target_str: &str, build_path: &str) -> Result<()> {
-    use crate::{api, config, utils};
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    let target = utils::parse_target_v2(target_str)?;
-    let full_domain = target.domain();
-
-    let cfg = config::load_config().context("Config error")?;
-    let token = cfg.token.context("Please run `ops login` first.")?;
-
-    // Get CI key based on target type
-    let private_key = match &target {
-        utils::TargetType::NodeId { id, .. } => {
-            api::get_node_ci_key(&token, *id).await?.private_key
-        }
-        utils::TargetType::AppTarget { app, project, .. } => {
-            api::get_app_ci_key(&token, project, app).await?.private_key
-        }
-    };
-
-    let mut temp_key_file = tempfile::NamedTempFile::new()?;
-    writeln!(temp_key_file, "{}", private_key)?;
-    let meta = temp_key_file.as_file().metadata()?;
-    let mut perms = meta.permissions();
-    perms.set_mode(0o600);
-    temp_key_file.as_file().set_permissions(perms)?;
-    let key_path = temp_key_file.path().to_str().unwrap().to_string();
-
-    let ssh_cmd = format!(
-        "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-        key_path
-    );
-    let remote = format!("root@{}:{}/", full_domain, build_path);
-
-    let status = std::process::Command::new("rsync")
-        .arg("-az")
-        .arg("--delete")
-        .arg("-e").arg(&ssh_cmd)
-        .arg("--exclude").arg("target/")
-        .arg("--exclude").arg("node_modules/")
-        .arg("--exclude").arg(".git/")
-        .arg("--exclude").arg(".env")
-        .arg("--exclude").arg(".env.deploy")
-        .arg("./")
-        .arg(&remote)
-        .status()
-        .context("Failed to execute rsync (is rsync installed?)")?;
-
-    if !status.success() {
-        return Err(anyhow::anyhow!("rsync failed with status: {}", status));
-    }
-    Ok(())
-}
-
 /// 构建并推送 Docker 镜像
-async fn build_and_push_images(
+fn build_and_push_images(
     build: &BuildConfig,
-    node: &str,
+    session: &SshSession,
     image_config: &crate::types::BuildImageConfig,
     service_filter: &Option<String>,
     tag: &Option<String>,
     no_push: bool,
+    jobs: usize,
 ) -> Result<()> {
     let tag = tag.as_deref().unwrap_or("latest");
     let services: Vec<&str> = if let Some(filter) = service_filter {
@@ -251,11 +223,12 @@ async fn build_and_push_images(
         image_config.services.iter().map(|s| s.as_str()).collect()
     };
 
-    println!(
-        "\n{} ({} services, tag: {})",
+    o_step!(
+        "\n{} ({} services, tag: {}, jobs: {})",
         "🐳 Building Docker images...".cyan(),
         services.len().to_string().yellow(),
         tag.yellow(),
+        jobs.to_string().yellow(),
     );
 
     // Docker registry login
@@ -264,42 +237,138 @@ async fn build_and_push_images(
         "echo '{}' | docker login {} -u {} --password-stdin 2>/dev/null",
         token, image_config.registry, image_config.username,
     );
-    ssh::execute_remote_command(node, &login_cmd, None).await?;
-    println!("   {}", "✔ Registry login".green());
+    session.exec(&login_cmd, None)?;
+    o_success!("   {}", "✔ Registry login".green());
 
-    // Build & push each service
     let img_start = Instant::now();
-    for (i, svc) in services.iter().enumerate() {
-        let progress = format!("[{}/{}]", i + 1, services.len());
-        println!("   {} {} {}/{}", progress.dimmed(), "📦".dimmed(), image_config.prefix, svc);
 
-        // Build image
-        let build_cmd = format!(
-            "cd {} && docker build -f {} --build-arg {}={} -t {}/{}:{} -t {}/{}:latest . 2>&1 | tail -1",
-            build.path,
-            image_config.dockerfile,
-            image_config.binary_arg, svc,
-            image_config.prefix, svc, tag,
-            image_config.prefix, svc,
-        );
-        ssh::execute_remote_command(node, &build_cmd, None).await
-            .with_context(|| format!("Failed to build image for {}", svc))?;
+    if jobs <= 1 {
+        // 顺序构建（兼容旧行为）
+        for (i, svc) in services.iter().enumerate() {
+            let progress = format!("[{}/{}]", i + 1, services.len());
+            o_detail!("   {} {} {}/{}", progress.dimmed(), "📦".dimmed(), image_config.prefix, svc);
 
-        // Push image
-        if !no_push {
-            let push_cmd = format!(
-                "docker push {}/{}:{} && docker push {}/{}:latest",
+            let build_cmd = format!(
+                "cd {} && docker build -f {} --build-arg {}={} -t {}/{}:{} -t {}/{}:latest .",
+                build.path, image_config.dockerfile,
+                image_config.binary_arg, svc,
                 image_config.prefix, svc, tag,
                 image_config.prefix, svc,
             );
-            ssh::execute_remote_command(node, &push_cmd, None).await
-                .with_context(|| format!("Failed to push image for {}", svc))?;
+            session.exec(&build_cmd, None)
+                .with_context(|| format!("Failed to build image for {}", svc))?;
+
+            if !no_push {
+                let push_cmd = format!(
+                    "docker push {}/{}:{} && docker push {}/{}:latest",
+                    image_config.prefix, svc, tag,
+                    image_config.prefix, svc,
+                );
+                session.exec(&push_cmd, None)
+                    .with_context(|| format!("Failed to push image for {}", svc))?;
+            }
+        }
+    } else {
+        // 并行构建：按 batch 分组，每 batch 在远程 shell 并行执行
+        let batches: Vec<&[&str]> = services.chunks(jobs).collect();
+        let total_batches = batches.len();
+
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            let batch_names: Vec<&str> = batch.to_vec();
+            o_detail!(
+                "   {} Building {}...",
+                format!("[batch {}/{}]", batch_idx + 1, total_batches).dimmed(),
+                batch_names.join(", ").cyan(),
+            );
+
+            // 构建并行 shell 命令：每个 service 后台运行，输出到 log，exit code 到文件
+            let mut cmds = Vec::new();
+            for svc in &batch_names {
+                cmds.push(format!(
+                    "(cd {} && docker build -f {} --build-arg {}={} -t {}/{}:{} -t {}/{}:latest . > /tmp/ops_build_{}.log 2>&1; echo $? > /tmp/ops_build_{}.exit) &",
+                    build.path, image_config.dockerfile,
+                    image_config.binary_arg, svc,
+                    image_config.prefix, svc, tag,
+                    image_config.prefix, svc,
+                    svc, svc,
+                ));
+            }
+            cmds.push("wait".to_string());
+            let parallel_cmd = cmds.join("\n");
+            session.exec(&parallel_cmd, None)?;
+
+            // 检查每个 service 的构建结果
+            let exit_check: Vec<String> = batch_names.iter()
+                .map(|svc| format!("echo -n \"{}:\"; cat /tmp/ops_build_{}.exit", svc, svc))
+                .collect();
+            let check_cmd = exit_check.join("; ");
+            let output = session.exec_output(&check_cmd)?;
+            let results = String::from_utf8_lossy(&output);
+
+            let mut failed: Vec<String> = Vec::new();
+            for line in results.trim().split('\n') {
+                if let Some((svc, code)) = line.split_once(':') {
+                    let svc = svc.trim();
+                    let code = code.trim();
+                    if code == "0" {
+                        o_success!("   {} {}", "✔".green(), svc);
+                    } else {
+                        o_error!("   {} {} (exit {})", "✗".red(), svc.red(), code);
+                        failed.push(svc.to_string());
+                    }
+                }
+            }
+
+            if !failed.is_empty() {
+                // 显示失败 service 的构建日志
+                for svc in &failed {
+                    o_error!("\n   --- {} build log ---", svc);
+                    let log_cmd = format!("tail -30 /tmp/ops_build_{}.log", svc);
+                    session.exec(&log_cmd, None).ok();
+                }
+                return Err(anyhow::anyhow!("Build failed for: {}", failed.join(", ")));
+            }
+        }
+
+        // 并行推送
+        if !no_push {
+            o_detail!("   {}", "Pushing images...".dimmed());
+            let push_batches: Vec<&[&str]> = services.chunks(jobs).collect();
+            for batch in &push_batches {
+                let mut push_cmds = Vec::new();
+                for svc in *batch {
+                    push_cmds.push(format!(
+                        "(docker push {}/{}:{} && docker push {}/{}:latest > /tmp/ops_push_{}.log 2>&1; echo $? > /tmp/ops_push_{}.exit) &",
+                        image_config.prefix, svc, tag,
+                        image_config.prefix, svc,
+                        svc, svc,
+                    ));
+                }
+                push_cmds.push("wait".to_string());
+                session.exec(&push_cmds.join("\n"), None)?;
+
+                // 检查 push 结果
+                let exit_check: Vec<String> = batch.iter()
+                    .map(|svc| format!("echo -n \"{}:\"; cat /tmp/ops_push_{}.exit", svc, svc))
+                    .collect();
+                let output = session.exec_output(&exit_check.join("; "))?;
+                let results = String::from_utf8_lossy(&output);
+
+                for line in results.trim().split('\n') {
+                    if let Some((svc, code)) = line.split_once(':') {
+                        if code.trim() != "0" {
+                            return Err(anyhow::anyhow!("Push failed for: {}", svc.trim()));
+                        }
+                    }
+                }
+            }
+            o_success!("   {}", "✔ All images pushed".green());
         }
     }
 
     let img_duration = img_start.elapsed();
     let action = if no_push { "built" } else { "built & pushed" };
-    println!(
+    o_success!(
         "   {} {} {} images {} ({})",
         "✔".green(),
         services.len(),
@@ -308,8 +377,7 @@ async fn build_and_push_images(
         format_duration(img_duration),
     );
 
-    // Clean up dangling images
-    ssh::execute_remote_command(node, "docker image prune -f 2>/dev/null", None).await.ok();
+    session.exec("docker image prune -f 2>/dev/null", None).ok();
 
     Ok(())
 }

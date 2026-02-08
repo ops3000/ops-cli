@@ -42,10 +42,10 @@ pub fn check_for_update(verbose: bool) -> Result<Option<String>> {
 
     if latest > current {
         if verbose {
-            println!("\n{}", "✨ New version available!".bold().yellow());
-            println!("Current: {}", current_version.red());
-            println!("Latest:  {}", release.version.green());
-            println!("Run `{}` to update.\n", "ops update".bold());
+            o_warn!("\n{}", "✨ New version available!".bold().yellow());
+            o_detail!("Current: {}", current_version.red());
+            o_detail!("Latest:  {}", release.version.green());
+            o_detail!("Run `{}` to update.\n", "ops update".bold());
         }
         return Ok(Some(release.version));
     }
@@ -55,18 +55,18 @@ pub fn check_for_update(verbose: bool) -> Result<Option<String>> {
 
 pub fn update_self() -> Result<()> {
     let current_version = cargo_crate_version!();
-    println!("Checking for updates...");
+    o_step!("Checking for updates...");
 
     let release = fetch_latest_release()?;
     let current = semver::Version::parse(current_version)?;
     let latest = semver::Version::parse(&release.version)?;
 
     if latest <= current {
-        println!("{}", "You are already using the latest version.".green());
+        o_success!("{}", "You are already using the latest version.".green());
         return Ok(());
     }
 
-    println!(
+    o_step!(
         "Updating {} → {}",
         current_version.red(),
         release.version.green()
@@ -110,7 +110,7 @@ pub fn update_self() -> Result<()> {
         .replace_using_temp(&current_exe)
         .to_dest(&current_exe)?;
 
-    println!(
+    o_success!(
         "{}",
         format!("✔ Successfully updated to version {}!", release.version).green()
     );
@@ -140,7 +140,7 @@ pub fn check_and_auto_update() -> Result<bool> {
     };
 
     if latest > current {
-        println!(
+        o_step!(
             "{}",
             format!("🔄 Updating ops {} → {}...", current, latest).yellow()
         );
@@ -180,7 +180,7 @@ pub fn check_and_auto_update() -> Result<bool> {
             .replace_using_temp(&current_exe)
             .to_dest(&current_exe)?;
 
-        println!(
+        o_success!(
             "{}",
             format!("✔ Updated to {}. Please re-run your command.", release.version).green()
         );

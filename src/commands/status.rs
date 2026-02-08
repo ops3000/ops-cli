@@ -29,7 +29,7 @@ pub async fn handle_status(file: String) -> Result<()> {
     let target = ops_config.target.as_deref()
         .context("ops.toml must have 'target' for status command")?;
 
-    println!("{} {}\n", "📊 Status:".cyan(), target.green());
+    o_step!("{} {}\n", "📊 Status:".cyan(), target.green());
 
     let cmd = format!(
         "cd {} && docker compose ps",
@@ -50,8 +50,8 @@ async fn show_multi_node_status(
     let strategy = resp.lb_strategy.as_deref().unwrap_or("single");
     let node_count = resp.targets.len();
 
-    println!("{} {} (project: {})", "📊 App:".cyan(), app.green(), project.green());
-    println!("   Mode: {} ({} nodes, strategy: {})\n",
+    o_step!("{} {} (project: {})", "📊 App:".cyan(), app.green(), project.green());
+    o_detail!("   Mode: {} ({} nodes, strategy: {})\n",
         resp.mode.cyan(), node_count, strategy.yellow());
 
     for t in &resp.targets {
@@ -64,24 +64,24 @@ async fn show_multi_node_status(
         };
         let primary_tag = if t.is_primary { " (primary)".cyan() } else { "".normal() };
 
-        println!("  Node {} ({}, {}){}", t.node_id, region, hostname, primary_tag);
+        o_detail!("  Node {} ({}, {}){}", t.node_id, region, hostname, primary_tag);
 
         // Try to get container status via SSH
         let cmd = format!("cd {} && docker compose ps --format '  {{{{.Name}}}}\\t{{{{.Status}}}}'",
             config.deploy_path);
-        print!("    Status: ");
+        o_print!("    Status: ");
         match ssh::execute_remote_command(&t.domain, &cmd, None).await {
             Ok(_) => {}
             Err(_) => {
                 // If SSH fails, just show the health status
-                println!("    {}", status_colored);
+                o_detail!("    {}", status_colored);
             }
         }
-        println!();
+        o_detail!("");
     }
 
     let healthy = resp.targets.iter().filter(|t| t.status == "healthy").count();
-    println!("  {}/{} nodes healthy", healthy.to_string().green(), node_count);
+    o_result!("  {}/{} nodes healthy", healthy.to_string().green(), node_count);
 
     Ok(())
 }

@@ -8,10 +8,10 @@ pub async fn handle_whoami() -> Result<()> {
     
     let res = api::whoami(&token).await?;
 
-    println!("You are logged in as:");
-    println!("  {} {}", "User ID:".bold(), res.user_id);
-    println!("  {}   {}", "Username:".bold(), res.username.cyan());
-    println!("  {} {}", "Token Expires:".bold(), res.token_expires_at);
+    o_result!("You are logged in as:");
+    o_detail!("  {} {}", "User ID:".bold(), res.user_id);
+    o_detail!("  {}   {}", "Username:".bold(), res.username.cyan());
+    o_detail!("  {} {}", "Token Expires:".bold(), res.token_expires_at);
 
     Ok(())
 }

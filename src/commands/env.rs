@@ -16,7 +16,7 @@ pub async fn handle_upload(target_str: String) -> Result<()> {
     let content = fs::read_to_string(local_env_path)
         .context("Failed to read local .env file")?;
 
-    println!("Uploading local .env to {}...", target_str.cyan());
+    o_step!("Uploading local .env to {}...", target_str.cyan());
     
     // 远程路径固定
     let remote_path = format!("/opt/judge/.env");
@@ -25,13 +25,13 @@ pub async fn handle_upload(target_str: String) -> Result<()> {
     // 核心修复：直接调用导入的函数
     execute_remote_command(&target_str, &command, Some(&content)).await?;
 
-    println!("{}", "✔ .env file uploaded successfully.".green());
+    o_success!("{}", "✔ .env file uploaded successfully.".green());
     Ok(())
 }
 
 // ops env download <target>
 pub async fn handle_download(target_str: String) -> Result<()> {
-    println!("Downloading .env from {}...", target_str.cyan());
+    o_step!("Downloading .env from {}...", target_str.cyan());
     
     let remote_path = format!("/opt/judge/.env");
     let command = format!("sudo cat {}", remote_path);
@@ -41,6 +41,6 @@ pub async fn handle_download(target_str: String) -> Result<()> {
     
     fs::write("./.env", &output).context("Failed to write to local .env file")?;
 
-    println!("{}", "✔ .env file downloaded successfully.".green());
+    o_success!("{}", "✔ .env file downloaded successfully.".green());
     Ok(())
 }

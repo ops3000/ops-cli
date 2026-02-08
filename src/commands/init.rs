@@ -86,12 +86,12 @@ fn cleanup_old_residue() -> Result<bool> {
     }
 
     if found_residue {
-        println!("{}", "Found old OPS configuration, cleaning up...".yellow());
+        o_warn!("{}", "Found old OPS configuration, cleaning up...".yellow());
         for path in &cleaned {
-            println!("  Removed: {}", path.dimmed());
+            o_detail!("  Removed: {}", path.dimmed());
         }
         if !cleaned.is_empty() {
-            println!("{}", "✔ Old configuration cleaned".green());
+            o_success!("{}", "✔ Old configuration cleaned".green());
         }
         // Reload nginx if we modified its config
         if cleaned.iter().any(|p| p.contains("nginx")) {
@@ -104,7 +104,7 @@ fn cleanup_old_residue() -> Result<bool> {
 
 /// Prompt user for yes/no confirmation
 fn confirm(prompt: &str) -> bool {
-    print!("{} [y/N]: ", prompt);
+    o_print!("{} [y/N]: ", prompt);
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
@@ -122,7 +122,7 @@ fn configure_serve_daemon(
 ) -> Result<()> {
     let domain = format!("{}.node.ops.autos", node_id);
 
-    println!("Configuring systemd service...");
+    o_step!("Configuring systemd service...");
 
     let service_content = format!(r#"[Unit]
 Description=OPS Serve - Node {}
@@ -144,8 +144,8 @@ WantedBy=multi-user.target
 
     // Check if running as root
     if std::env::var("USER").unwrap_or_default() != "root" {
-        println!("{}", "Warning: Not running as root. Cannot install systemd service.".yellow());
-        println!("Run with sudo or as root to enable auto-start.");
+        o_warn!("{}", "Warning: Not running as root. Cannot install systemd service.".yellow());
+        o_warn!("Run with sudo or as root to enable auto-start.");
         return Ok(());
     }
 
@@ -166,11 +166,11 @@ WantedBy=multi-user.target
             .context(format!("Failed to run {} {:?}", cmd, args))?;
 
         if !status.success() {
-            println!("{}", format!("Warning: {} {:?} failed", cmd, args).yellow());
+            o_warn!("{}", format!("Warning: {} {:?} failed", cmd, args).yellow());
         }
     }
 
-    println!("{}", "✔ ops-serve daemon installed and started".green());
+    o_success!("{}", "✔ ops-serve daemon installed and started".green());
 
     // Configure nginx if available
     if Path::new("/etc/nginx").exists() {
@@ -216,9 +216,9 @@ fn configure_nginx(domain: &str, port: u16) -> Result<()> {
             .args(["reload", "nginx"])
             .status()
             .context("Failed to reload nginx")?;
-        println!("{}", format!("✔ nginx configured for {}", domain).green());
+        o_success!("{}", format!("✔ nginx configured for {}", domain).green());
     } else {
-        println!("{}", "Warning: nginx config test failed".yellow());
+        o_warn!("{}", "Warning: nginx config test failed".yellow());
     }
 
     Ok(())
@@ -305,8 +305,8 @@ fn timezone_to_region(tz: &str) -> Option<String> {
 fn confirm_region(detected: Option<(String, String)>) -> Option<String> {
     match detected {
         Some((region, city)) => {
-            println!("  Detected: {} ({})", region.cyan(), city);
-            print!("  Use this region? [Y/n/custom]: ");
+            o_detail!("  Detected: {} ({})", region.cyan(), city);
+            o_print!("  Use this region? [Y/n/custom]: ");
             io::stdout().flush().unwrap();
 
             let mut input = String::new();
@@ -323,8 +323,8 @@ fn confirm_region(detected: Option<(String, String)>) -> Option<String> {
             }
         }
         None => {
-            println!("  {}", "Could not detect region automatically.".yellow());
-            print!("  Enter region (or press Enter to skip): ");
+            o_warn!("  {}", "Could not detect region automatically.".yellow());
+            o_print!("  Enter region (or press Enter to skip): ");
             io::stdout().flush().unwrap();
 
             let mut input = String::new();
@@ -351,41 +351,41 @@ pub async fn handle_init(
     hostname: Option<String>,
     compose_dir: Option<String>,
 ) -> Result<()> {
-    println!();
-    println!("{}", "OPS Node Initialization".cyan().bold());
-    println!("{}", "═══════════════════════".cyan());
-    println!();
+    o_step!();
+    o_step!("{}", "OPS Node Initialization".cyan().bold());
+    o_step!("{}", "═══════════════════════".cyan());
+    o_step!();
 
     // 1. Check if logged in
     let cfg = config::load_config()
         .context("Not logged in. Run `ops login` first.")?;
     let token = cfg.token
         .context("Not logged in. Run `ops login` first.")?;
-    println!("{}", "✔ Logged in".green());
+    o_success!("{}", "✔ Logged in".green());
 
     // 2. Check and clean up old residue
     cleanup_old_residue()?;
 
     // 3. Get SSH public key
     let ssh_pub_key = get_ssh_public_key()?;
-    println!("{}", "✔ SSH public key found".green());
+    o_success!("{}", "✔ SSH public key found".green());
 
     // 4. Auto-detect region if not provided
     let region = if region.is_some() {
         region
     } else {
-        println!();
-        println!("{}", "Detecting region...".cyan());
+        o_step!();
+        o_step!("{}", "Detecting region...".cyan());
         let detected = detect_region().await;
         let confirmed = confirm_region(detected);
         if let Some(ref r) = confirmed {
-            println!("{}", format!("✔ Region: {}", r).green());
+            o_success!("{}", format!("✔ Region: {}", r).green());
         }
         confirmed
     };
 
     // 5. Try to initialize node
-    println!("Registering node...");
+    o_step!("Registering node...");
 
     let res = match api::init_node(
         &token,
@@ -402,8 +402,8 @@ pub async fn handle_init(
             // If IP already registered, ask user if they want to overwrite
             if err_msg.contains("already registered") {
                 // Extract existing node ID from error message if available
-                println!();
-                println!("{}", "This server is already registered as a node.".yellow());
+                o_warn!();
+                o_warn!("{}", "This server is already registered as a node.".yellow());
 
                 if confirm("Overwrite existing configuration?") {
                     api::reinit_node(
@@ -416,7 +416,7 @@ pub async fn handle_init(
                         hostname.as_deref(),
                     ).await?
                 } else {
-                    println!("Aborted.");
+                    o_warn!("Aborted.");
                     return Ok(());
                 }
             } else {
@@ -425,25 +425,25 @@ pub async fn handle_init(
         }
     };
 
-    println!();
-    println!("{}", "✔ Node registered".green().bold());
-    println!();
-    println!("  Node ID:  {}", res.node_id.to_string().cyan().bold());
-    println!("  Domain:   {}", res.domain.cyan());
-    println!("  IP:       {}", res.ip_address);
+    o_success!();
+    o_success!("{}", "✔ Node registered".green().bold());
+    o_detail!();
+    o_detail!("  Node ID:  {}", res.node_id.to_string().cyan().bold());
+    o_detail!("  Domain:   {}", res.domain.cyan());
+    o_detail!("  IP:       {}", res.ip_address);
     match &res.region {
-        Some(r) => println!("  Region:   {}", r.cyan()),
-        None => println!("  Region:   {}", "(not set, use --region to configure)".dimmed()),
+        Some(r) => o_detail!("  Region:   {}", r.cyan()),
+        None => o_detail!("  Region:   {}", "(not set, use --region to configure)".dimmed()),
     }
 
     // 6. Add CI public key to authorized_keys
-    println!();
-    println!("Configuring SSH access...");
+    o_step!();
+    o_step!("Configuring SSH access...");
     ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
-    println!("{}", "✔ CI key added to authorized_keys".green());
+    o_success!("{}", "✔ CI key added to authorized_keys".green());
 
     // 7. Configure systemd daemon (always)
-    println!();
+    o_step!();
     let compose_directory = compose_dir.as_deref().unwrap_or("/root");
     configure_serve_daemon(
         &res.serve_token,
@@ -453,16 +453,16 @@ pub async fn handle_init(
     )?;
 
     // Done
-    println!();
-    println!("{}", "═══════════════════════════════════════════".green());
-    println!("{}", "  Node initialization complete!".green().bold());
-    println!("{}", "═══════════════════════════════════════════".green());
-    println!();
-    println!("Access this server remotely:");
-    println!("  {}", format!("ops ssh {}", res.node_id).cyan());
-    println!();
-    println!("Bind to an app:");
-    println!("  {}", format!("ops set api.MyProject --node {}", res.node_id).cyan());
+    o_result!();
+    o_result!("{}", "═══════════════════════════════════════════".green());
+    o_result!("{}", "  Node initialization complete!".green().bold());
+    o_result!("{}", "═══════════════════════════════════════════".green());
+    o_result!();
+    o_result!("Access this server remotely:");
+    o_result!("  {}", format!("ops ssh {}", res.node_id).cyan());
+    o_result!();
+    o_result!("Bind to an app:");
+    o_result!("  {}", format!("ops set api.MyProject --node {}", res.node_id).cyan());
 
     Ok(())
 }
