@@ -352,12 +352,18 @@ enum DomainCommands {
     Add {
         /// Custom domain (e.g., api.example.com)
         domain: String,
+        /// App name (required for project mode with multiple apps)
+        #[arg(short, long)]
+        app: Option<String>,
         /// Path to ops.toml
         #[arg(short, long, default_value = "ops.toml")]
         file: String,
     },
     /// List custom domains for your app
     List {
+        /// App name (required for project mode with multiple apps)
+        #[arg(short, long)]
+        app: Option<String>,
         /// Path to ops.toml
         #[arg(short, long, default_value = "ops.toml")]
         file: String,
@@ -507,10 +513,10 @@ async fn main() -> Result<()> {
         },
 
         Commands::Domain(cmd) => match cmd {
-            DomainCommands::Add { domain, file } =>
-                commands::domain::handle_add(file.clone(), domain.clone()).await,
-            DomainCommands::List { file } =>
-                commands::domain::handle_list(file.clone()).await,
+            DomainCommands::Add { domain, app, file } =>
+                commands::domain::handle_add(file.clone(), domain.clone(), app.clone()).await,
+            DomainCommands::List { app, file } =>
+                commands::domain::handle_list(file.clone(), app.clone()).await,
             DomainCommands::Remove { domain, file } =>
                 commands::domain::handle_remove(file.clone(), domain.clone()).await,
         },
