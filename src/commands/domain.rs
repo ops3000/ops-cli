@@ -123,7 +123,15 @@ pub async fn handle_list(file: String, app_flag: Option<String>) -> Result<()> {
                 "pending" => d.status.yellow(),
                 _ => d.status.red(),
             };
-            o_detail!("  {} [{}]", d.domain.cyan(), status_color);
+            if d.status == "pending" {
+                if let Some(ref target) = d.cname_target {
+                    o_detail!("  {} [{}] → CNAME {}", d.domain.cyan(), status_color, target.green());
+                } else {
+                    o_detail!("  {} [{}]", d.domain.cyan(), status_color);
+                }
+            } else {
+                o_detail!("  {} [{}]", d.domain.cyan(), status_color);
+            }
         }
     }
 

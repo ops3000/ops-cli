@@ -440,6 +440,7 @@ pub struct DomainItem {
     pub domain: String,
     pub status: String,
     pub created_at: String,
+    pub cname_target: Option<String>,
 }
 
 
