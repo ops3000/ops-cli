@@ -376,6 +376,21 @@ enum DomainCommands {
         #[arg(short, long, default_value = "ops.toml")]
         file: String,
     },
+    /// Sync domains declared in ops.toml to backend
+    Sync {
+        /// Path to ops.toml
+        #[arg(short, long, default_value = "ops.toml")]
+        file: String,
+        /// Sync only domains for this app
+        #[arg(short, long)]
+        app: Option<String>,
+        /// Remove domains from backend that are not in ops.toml
+        #[arg(long)]
+        prune: bool,
+        /// Skip confirmation when pruning
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -519,6 +534,8 @@ async fn main() -> Result<()> {
                 commands::domain::handle_list(file.clone(), app.clone()).await,
             DomainCommands::Remove { domain, file } =>
                 commands::domain::handle_remove(file.clone(), domain.clone()).await,
+            DomainCommands::Sync { file, app, prune, yes } =>
+                commands::domain::handle_sync(file.clone(), app.clone(), *prune, *yes).await,
         },
 
         Commands::Pool(cmd) => match cmd {

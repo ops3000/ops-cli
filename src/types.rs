@@ -95,6 +95,8 @@ pub struct OpsToml {
     #[serde(default)]
     pub apps: Vec<AppDef>,                      // 新：app 分组
     #[serde(default)]
+    pub domains: Vec<String>,                   // legacy 模式自定义域名
+    #[serde(default)]
     pub env_files: Vec<EnvFileMapping>,
     #[serde(default)]
     pub sync: Vec<SyncMapping>,
@@ -165,6 +167,8 @@ pub struct DeployConfig {
 pub struct AppDef {
     pub name: String,
     pub services: Vec<String>,
+    #[serde(default)]
+    pub domains: Vec<String>,
 }
 
 
