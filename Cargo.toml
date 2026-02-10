@@ -31,3 +31,4 @@ axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 tokio-stream = "0.1"
 nix = { version = "0.29", features = ["fs"] }
+rand = "0.8"

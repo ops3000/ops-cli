@@ -1,5 +1,5 @@
 use crate::types::{OpsToml, DeployTarget};
-use crate::commands::common::{resolve_env_value, rsync_push};
+use crate::commands::common::resolve_env_value;
 use crate::commands::ssh::SshSession;
 use crate::commands::scp;
 use crate::{api, config};
@@ -511,12 +511,7 @@ fn sync_code(
         }
         "push" => {
             o_step!("\n{}", "📤 Syncing code (rsync)...".cyan());
-            // rsync 有自己的 SSH 逻辑，暂时无法复用 session
-            let target = session.target().to_string();
-            let path = deploy_path.clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(rsync_push(&target, &path))
-            })?;
+            session.rsync_push(&deploy_path)?;
             o_success!("   {}", "✔ Code synced.".green());
         }
         "image" => {
@@ -600,8 +595,22 @@ fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession) -> Result<(
 
     let app_name = resolve_app_name(config)?;
 
+    // Build *.ops.autos aliases from project + apps
+    let ops_autos_aliases: Vec<String> = if let Some(ref project) = config.project {
+        config.apps.iter().map(|a| format!("{}.{}.ops.autos", a.name, project)).collect()
+    } else {
+        vec![]
+    };
+    let aliases_str = ops_autos_aliases.join(" ");
+
     let mut nginx = String::new();
     for route in &config.routes {
+        let server_names = if aliases_str.is_empty() {
+            route.domain.clone()
+        } else {
+            format!("{} {}", route.domain, aliases_str)
+        };
+
         nginx.push_str(&format!(
             r#"server {{
     listen 80;
@@ -624,7 +633,7 @@ fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession) -> Result<(
 }}
 
 "#,
-            domain = route.domain,
+            domain = server_names,
             port = route.port
         ));
 

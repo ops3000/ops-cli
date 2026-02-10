@@ -25,3 +25,4 @@ pub mod node;
 pub mod launch;
 pub mod domain;
 pub mod pool;
+pub mod tunnel;

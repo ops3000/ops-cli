@@ -22,6 +22,12 @@ pub async fn handle_add(file: String, domain: String) -> Result<()> {
     o_success!("\n{} {}", "✔".green(), resp.message);
     o_detail!("  CNAME: {} → {}", domain.cyan(), resp.cname_target.green());
     o_detail!("  SSL:   {}", resp.ssl_status);
+
+    if let Some(ref url) = resp.domain_connect_url {
+        o_result!();
+        o_result!("  {} {}", "Auto-configure DNS:".cyan().bold(), url);
+    }
+
     o_warn!("\n{}", resp.instructions.yellow());
 
     Ok(())

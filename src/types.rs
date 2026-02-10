@@ -5,26 +5,31 @@ pub struct LoginResponse {
     pub token: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct NodeSetResponse {
     pub message: String,
     pub ci_ssh_public_key: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct CiKeyResponse {
     pub private_key: String,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct ErrorResponse {
     pub error: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct RegisterResponse {
     pub message: String,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct WhoamiResponse {
@@ -34,10 +39,12 @@ pub struct WhoamiResponse {
     pub token_expires_at: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct ProjectResponse {
     pub message: String,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct ServerWhoamiResponse {
@@ -50,6 +57,7 @@ pub struct ServerWhoamiResponse {
     pub message: Option<String>,
 }
 
+
 // --- 新增：项目列表相关的结构体 ---
 
 #[derive(Deserialize, Debug)]
@@ -59,16 +67,19 @@ pub struct NodeItem {
     pub domain: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct ProjectItem {
     pub name: String,
     pub nodes: Vec<NodeItem>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct ProjectListResponse {
     pub projects: Vec<ProjectItem>,
 }
+
 
 // ===== ops.toml 配置结构 =====
 
@@ -94,6 +105,7 @@ pub struct OpsToml {
     pub build: Option<BuildConfig>,             // 远程构建配置
 }
 
+
 // ===== 远程构建配置 =====
 
 fn default_build_source() -> String { "git".into() }
@@ -111,12 +123,14 @@ pub struct BuildConfig {
     pub image: Option<BuildImageConfig>,        // Docker 镜像打包
 }
 
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct BuildGitConfig {
     pub repo: String,
     pub ssh_key: Option<String>,
     pub token: Option<String>,                  // HTTPS token, 支持 $ENV_VAR
 }
+
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct BuildImageConfig {
@@ -130,6 +144,7 @@ pub struct BuildImageConfig {
     pub binary_arg: String,                     // Dockerfile ARG name
     pub services: Vec<String>,                  // 服务列表
 }
+
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct DeployConfig {
@@ -145,11 +160,13 @@ pub struct DeployConfig {
     pub registry: Option<RegistryConfig>,
 }
 
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct AppDef {
     pub name: String,
     pub services: Vec<String>,
 }
+
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RegistryConfig {
@@ -159,6 +176,7 @@ pub struct RegistryConfig {
     pub username: String,
 }
 
+
 fn default_registry_username() -> String { "oauth2".into() }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -167,17 +185,20 @@ pub struct GitConfig {
     pub ssh_key: Option<String>,
 }
 
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EnvFileMapping {
     pub local: String,
     pub remote: String,
 }
 
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SyncMapping {
     pub local: String,
     pub remote: String,
 }
+
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RouteDef {
@@ -187,11 +208,13 @@ pub struct RouteDef {
     pub ssl: bool,
 }
 
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct HealthCheck {
     pub name: String,
     pub url: String,
 }
+
 
 // ===== App Sync API 结构 =====
 
@@ -202,16 +225,19 @@ pub struct SyncAppResponse {
     pub message: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct CreateDeploymentResponse {
     pub id: i64,
     pub status: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct UpdateDeploymentResponse {
     pub success: bool,
 }
+
 
 // ===== Node Group API 结构 =====
 
@@ -225,6 +251,7 @@ pub struct NodeGroup {
     pub node_count: Option<i64>,
     pub healthy_count: Option<i64>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct NodeInGroup {
@@ -240,10 +267,12 @@ pub struct NodeInGroup {
     pub has_serve_token: Option<i64>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct NodeGroupListResponse {
     pub node_groups: Vec<NodeGroup>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct NodeGroupDetailResponse {
@@ -256,6 +285,7 @@ pub struct NodeGroupDetailResponse {
     pub health_config: Option<HealthCheckConfig>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct HealthCheckConfig {
     pub check_type: String,
@@ -266,11 +296,13 @@ pub struct HealthCheckConfig {
     pub healthy_threshold: i64,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct CreateNodeGroupResponse {
     pub message: String,
     pub node_group: NodeGroup,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct NodeSetResponseV2 {
@@ -281,6 +313,7 @@ pub struct NodeSetResponseV2 {
     pub ci_ssh_public_key: String,
     pub region: Option<String>,
 }
+
 
 // ===== Nodes V2 API (Global Nodes) =====
 
@@ -295,6 +328,7 @@ pub struct NodeInitResponse {
     pub ci_ssh_public_key: String,
     pub region: Option<String>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct NodeV2 {
@@ -314,6 +348,7 @@ pub struct NodeV2 {
     pub bound_apps: Option<Vec<BoundApp>>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct BoundApp {
     pub id: i64,
@@ -322,10 +357,12 @@ pub struct BoundApp {
     pub is_primary: Option<i64>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct NodeV2ListResponse {
     pub nodes: Vec<NodeV2>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct PrimaryNodeResponse {
@@ -336,6 +373,7 @@ pub struct PrimaryNodeResponse {
     pub region: Option<String>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct BindNodeResponse {
     pub message: String,
@@ -345,6 +383,7 @@ pub struct BindNodeResponse {
     pub total_nodes: Option<i64>,
     pub is_primary: Option<bool>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct BindByNameResponse {
@@ -357,6 +396,7 @@ pub struct BindByNameResponse {
     pub domain: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct UnbindNodeResponse {
     pub message: String,
@@ -364,16 +404,19 @@ pub struct UnbindNodeResponse {
     pub remaining_nodes: Option<i64>,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct MessageResponse {
     pub message: String,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct RegenerateTokenResponse {
     pub message: String,
     pub serve_token: String,
 }
+
 
 // ===== Custom Domains API =====
 
@@ -384,7 +427,9 @@ pub struct AddDomainResponse {
     pub cname_target: String,
     pub ssl_status: String,
     pub instructions: String,
+    pub domain_connect_url: Option<String>,
 }
+
 
 #[derive(Deserialize, Debug)]
 pub struct DomainItem {
@@ -393,11 +438,13 @@ pub struct DomainItem {
     pub created_at: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct ListDomainsResponse {
     pub domains: Vec<DomainItem>,
     pub default_domain: String,
 }
+
 
 // ===== Deploy Targets API (multi-node deployment) =====
 
@@ -414,6 +461,7 @@ pub struct DeployTarget {
     pub status: String,
 }
 
+
 #[derive(Deserialize, Debug)]
 pub struct DeployTargetsResponse {
     pub mode: String,
@@ -421,3 +469,11 @@ pub struct DeployTargetsResponse {
     pub lb_strategy: Option<String>,
     pub targets: Vec<DeployTarget>,
 }
+
+#[derive(Deserialize, Debug)]
+pub struct CreateTunnelResponse {
+    pub tunnel_id: i64,
+    pub domain: String,
+    pub node_ip: String,
+}
+

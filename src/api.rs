@@ -9,7 +9,7 @@ use crate::types::{
     NodeGroupListResponse, NodeGroupDetailResponse, CreateNodeGroupResponse,
     // Nodes V2 types
     NodeInitResponse, NodeV2, NodeV2ListResponse, PrimaryNodeResponse,
-    BindNodeResponse, BindByNameResponse, MessageResponse,
+    BindNodeResponse, BindByNameResponse, MessageResponse, CreateTunnelResponse,
 };
 
 const BASE_URL: &str = "https://api.ops.autos";
@@ -609,6 +609,40 @@ pub async fn undrain_node(token: &str, group_id: i64, node_id: u64) -> Result<cr
     let client = Client::new();
     let res = client
         .post(format!("{}/node-groups/{}/nodes/{}/undrain", BASE_URL, group_id, node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+/// Register tunnel (POST /tunnels)
+pub async fn create_tunnel(
+    token: &str,
+    subdomain: &str,
+    project_name: &str,
+    node_id: u64,
+    remote_port: u16,
+) -> Result<crate::types::CreateTunnelResponse> {
+    let client = Client::new();
+    let body = serde_json::json!({
+        "subdomain": subdomain,
+        "project_name": project_name,
+        "node_id": node_id,
+        "remote_port": remote_port,
+    });
+    let res = client
+        .post(format!("{}/tunnels", BASE_URL))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+/// Delete tunnel (DELETE /tunnels/:id)
+pub async fn delete_tunnel(token: &str, tunnel_id: i64) -> Result<MessageResponse> {
+    let client = Client::new();
+    let res = client
+        .delete(format!("{}/tunnels/{}", BASE_URL, tunnel_id))
         .bearer_auth(token)
         .send()
         .await?;

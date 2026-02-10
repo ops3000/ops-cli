@@ -248,6 +248,18 @@ enum Commands {
     #[command(subcommand)]
     Pool(PoolCommands),
 
+    /// Create a reverse tunnel to expose local port via public URL
+    Tunnel {
+        /// Target in subdomain.project format (e.g., webhook.redq)
+        target: String,
+        /// Local port to forward traffic to
+        #[arg(short, long)]
+        port: u16,
+        /// Node ID to tunnel through
+        #[arg(long)]
+        node: u64,
+    },
+
     /// Update ops to the latest version
     Update,
 
@@ -410,7 +422,7 @@ async fn main() -> Result<()> {
     // Auto-update check (skip for certain commands)
     if !matches!(
         &cli.command,
-        Commands::Update | Commands::Version | Commands::Serve { .. }
+        Commands::Update | Commands::Version | Commands::Serve { .. } | Commands::Tunnel { .. }
     ) {
         if let Ok(true) = update::check_and_auto_update() {
             return Ok(()); // Exit after update, user should re-run
@@ -513,6 +525,9 @@ async fn main() -> Result<()> {
             PoolCommands::Undrain { target, node } =>
                 commands::pool::handle_undrain(target.clone(), *node).await,
         },
+
+        Commands::Tunnel { target, port, node } =>
+            commands::tunnel::handle_tunnel(target.clone(), *port, *node).await,
 
         Commands::Update => commands::update::handle_update().await,
         Commands::Version => {
