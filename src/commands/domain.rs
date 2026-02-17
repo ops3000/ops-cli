@@ -1,8 +1,7 @@
 use std::collections::HashSet;
-use std::io::{self, Write};
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
-use crate::{api, config};
+use crate::{api, config, prompt};
 use crate::commands::deploy::load_ops_toml;
 use crate::types::OpsToml;
 
@@ -152,7 +151,7 @@ pub async fn handle_remove(file: String, domain: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn handle_sync(file: String, app_flag: Option<String>, prune: bool, yes: bool) -> Result<()> {
+pub async fn handle_sync(file: String, app_flag: Option<String>, prune: bool, interactive: bool) -> Result<()> {
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
     let ops_config = load_ops_toml(&file)?;
@@ -215,16 +214,12 @@ pub async fn handle_sync(file: String, app_flag: Option<String>, prune: bool, ye
         // Handle extra domains in backend
         if !to_remove.is_empty() {
             if prune {
-                if !yes {
+                if interactive {
                     o_warn!("\n   Domains to remove from backend:");
                     for d in &to_remove {
                         o_warn!("     - {}", d);
                     }
-                    print!("   Continue? [y/N]: ");
-                    io::stdout().flush()?;
-                    let mut input = String::new();
-                    io::stdin().read_line(&mut input)?;
-                    if input.trim().to_lowercase() != "y" {
+                    if !prompt::confirm_no("Continue?", interactive)? {
                         o_warn!("   Skipped pruning for {}.{}", app_name, project);
                         continue;
                     }

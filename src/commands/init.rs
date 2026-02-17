@@ -1,4 +1,4 @@
-use crate::{api, config, ssh};
+use crate::{api, config, prompt, ssh};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Deserialize;
@@ -102,16 +102,6 @@ fn cleanup_old_residue() -> Result<bool> {
     Ok(found_residue)
 }
 
-/// Prompt user for yes/no confirmation
-fn confirm(prompt: &str) -> bool {
-    o_print!("{} [y/N]: ", prompt);
-    io::stdout().flush().unwrap();
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-
-    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-}
 
 /// Configure and start ops serve as a systemd service
 fn configure_serve_daemon(
@@ -301,11 +291,15 @@ fn timezone_to_region(tz: &str) -> Option<String> {
     Some(region.to_string())
 }
 
-/// Prompt user to confirm or override the detected region
-fn confirm_region(detected: Option<(String, String)>) -> Option<String> {
+/// Prompt user to confirm or override the detected region.
+/// Non-interactive: auto-accepts detected region, returns None if not detected.
+fn confirm_region(detected: Option<(String, String)>, interactive: bool) -> Option<String> {
     match detected {
         Some((region, city)) => {
             o_detail!("  Detected: {} ({})", region.cyan(), city);
+            if !interactive {
+                return Some(region);
+            }
             o_print!("  Use this region? [Y/n/custom]: ");
             io::stdout().flush().unwrap();
 
@@ -324,6 +318,9 @@ fn confirm_region(detected: Option<(String, String)>) -> Option<String> {
         }
         None => {
             o_warn!("  {}", "Could not detect region automatically.".yellow());
+            if !interactive {
+                return None;
+            }
             o_print!("  Enter region (or press Enter to skip): ");
             io::stdout().flush().unwrap();
 
@@ -350,6 +347,7 @@ pub async fn handle_init(
     port: u16,
     hostname: Option<String>,
     compose_dir: Option<String>,
+    interactive: bool,
 ) -> Result<()> {
     o_step!();
     o_step!("{}", "OPS Node Initialization".cyan().bold());
@@ -377,7 +375,7 @@ pub async fn handle_init(
         o_step!();
         o_step!("{}", "Detecting region...".cyan());
         let detected = detect_region().await;
-        let confirmed = confirm_region(detected);
+        let confirmed = confirm_region(detected, interactive);
         if let Some(ref r) = confirmed {
             o_success!("{}", format!("✔ Region: {}", r).green());
         }
@@ -405,7 +403,7 @@ pub async fn handle_init(
                 o_warn!();
                 o_warn!("{}", "This server is already registered as a node.".yellow());
 
-                if confirm("Overwrite existing configuration?") {
+                if prompt::confirm_no("Overwrite existing configuration?", interactive)? {
                     api::reinit_node(
                         &token,
                         &ssh_pub_key,

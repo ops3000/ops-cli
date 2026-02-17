@@ -335,7 +335,7 @@ pub struct NodeInitResponse {
 
 
 #[derive(Deserialize, Debug)]
-pub struct NodeV2 {
+pub struct Node {
     pub id: i64,
     pub ip_address: String,
     pub hostname: Option<String>,
@@ -363,8 +363,8 @@ pub struct BoundApp {
 
 
 #[derive(Deserialize, Debug)]
-pub struct NodeV2ListResponse {
-    pub nodes: Vec<NodeV2>,
+pub struct NodeListResponse {
+    pub nodes: Vec<Node>,
 }
 
 

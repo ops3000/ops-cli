@@ -1,5 +1,5 @@
-use crate::{api, config};
-use anyhow::{Context, Result};
+use crate::{api, config, prompt};
+use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 
 /// List all nodes owned by the current user
@@ -9,7 +9,7 @@ pub async fn handle_list() -> Result<()> {
     let token = cfg.token
         .context("You are not logged in. Please run `ops login` first.")?;
 
-    let res = api::list_nodes_v2(&token).await?;
+    let res = api::list_nodes(&token).await?;
 
     if res.nodes.is_empty() {
         o_warn!("{}", "No nodes found.".yellow());
@@ -68,7 +68,7 @@ pub async fn handle_info(node_id: u64) -> Result<()> {
     let token = cfg.token
         .context("You are not logged in. Please run `ops login` first.")?;
 
-    let node = api::get_node_v2(&token, node_id).await?;
+    let node = api::get_node(&token, node_id).await?;
 
     let status_icon = match node.status.as_str() {
         "healthy" => "●".green(),
@@ -140,7 +140,7 @@ pub async fn handle_info(node_id: u64) -> Result<()> {
 }
 
 /// Remove a node
-pub async fn handle_remove(node_id: u64, force: bool) -> Result<()> {
+pub async fn handle_remove(node_id: u64, force: bool, interactive: bool) -> Result<()> {
     let cfg = config::load_config()
         .context("Could not load config. Please log in with `ops login`.")?;
     let token = cfg.token
@@ -150,13 +150,21 @@ pub async fn handle_remove(node_id: u64, force: bool) -> Result<()> {
         o_warn!("{}", format!("This will delete node #{} and all its associated data.", node_id).yellow());
         o_detail!("The node's DNS record will also be removed.");
         o_detail!();
-        o_detail!("Use --force to confirm deletion.");
-        return Ok(());
+
+        if interactive {
+            if !prompt::confirm_no("Are you sure?", interactive)? {
+                o_warn!("Aborted.");
+                return Ok(());
+            }
+        } else {
+            // Non-interactive without --force: refuse to delete
+            return Err(anyhow!("Destructive operation requires --force in non-interactive mode"));
+        }
     }
 
     o_step!("Deleting node #{}...", node_id);
 
-    let res = api::delete_node_v2(&token, node_id).await?;
+    let res = api::delete_node(&token, node_id).await?;
 
     o_success!("{}", format!("✔ {}", res.message).green());
 

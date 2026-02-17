@@ -1,16 +1,6 @@
-use crate::{api, config, ssh, utils};
+use crate::{api, config, prompt, ssh, utils};
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::io::{self, Write};
-
-fn prompt_confirm(prompt: &str) -> Result<bool> {
-    o_print!("{} [y/N]: ", prompt);
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_lowercase();
-    Ok(input == "y" || input == "yes")
-}
 
 /// Handle `ops set` command
 /// Two modes:
@@ -24,6 +14,7 @@ pub async fn handle_set(
     zone: Option<String>,
     hostname: Option<String>,
     weight: Option<u8>,
+    interactive: bool,
 ) -> Result<()> {
     let target = utils::parse_target(&target_str)?;
 
@@ -51,7 +42,7 @@ pub async fn handle_set(
     o_detail!("  Full Domain: {}.{}.ops.autos", target.environment, target.project);
     o_detail!();
 
-    if !prompt_confirm("Do you want to continue?")? {
+    if !prompt::confirm_yes("Do you want to continue?", interactive)? {
         o_warn!("Operation cancelled.");
         return Ok(());
     }
@@ -59,7 +50,7 @@ pub async fn handle_set(
     let mut force_reset = false;
     o_detail!();
     o_detail!("{}", "Tip: If you are having trouble with 'ops ssh' (invalid key format), please choose Yes below.".dimmed());
-    if prompt_confirm("Do you want to regenerate CI/CD SSH keys for this environment?")? {
+    if prompt::confirm_no("Do you want to regenerate CI/CD SSH keys for this environment?", interactive)? {
         force_reset = true;
     }
 

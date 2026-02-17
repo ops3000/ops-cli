@@ -64,7 +64,7 @@ async fn resolve_build_node(config: &OpsToml, build: &BuildConfig) -> Result<Str
         .context("Cannot resolve build node: set build.node, target, or project in ops.toml")?;
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
-    let nodes = api::list_nodes_v2(&token).await?;
+    let nodes = api::list_nodes(&token).await?;
     let node = nodes.nodes.iter()
         .find(|n| n.bound_apps.as_ref().map_or(false, |apps|
             apps.iter().any(|a| &a.project_name == project)))

@@ -7,8 +7,8 @@ use crate::types::{
     OpsToml, RouteDef,
     // Node Group types
     NodeGroupListResponse, NodeGroupDetailResponse, CreateNodeGroupResponse,
-    // Nodes V2 types
-    NodeInitResponse, NodeV2, NodeV2ListResponse, PrimaryNodeResponse,
+    // Node types
+    NodeInitResponse, Node, NodeListResponse, PrimaryNodeResponse,
     BindNodeResponse, BindByNameResponse, MessageResponse, CreateTunnelResponse,
 };
 
@@ -314,9 +314,9 @@ pub async fn get_nodes_in_env(token: &str, project: &str, environment: &str) -> 
     handle_response(res).await
 }
 
-// ===== Nodes V2 API (Global Nodes) =====
+// ===== Nodes API =====
 
-/// Initialize a new node (POST /nodes-v2/init)
+/// Initialize a new node (POST /nodes/init)
 pub async fn init_node(
     token: &str,
     ssh_pub_key: &str,
@@ -348,7 +348,7 @@ pub async fn init_node(
     }
 
     let res = client
-        .post(format!("{}/nodes-v2/init", BASE_URL))
+        .post(format!("{}/nodes/init", BASE_URL))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -357,7 +357,7 @@ pub async fn init_node(
     handle_response(res).await
 }
 
-/// Re-initialize an existing node (POST /nodes-v2/reinit)
+/// Re-initialize an existing node (POST /nodes/reinit)
 /// Used to get serve token for daemon setup on a server that's already registered
 pub async fn reinit_node(
     token: &str,
@@ -390,7 +390,7 @@ pub async fn reinit_node(
     }
 
     let res = client
-        .post(format!("{}/nodes-v2/reinit", BASE_URL))
+        .post(format!("{}/nodes/reinit", BASE_URL))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -399,11 +399,11 @@ pub async fn reinit_node(
     handle_response(res).await
 }
 
-/// List user's nodes (GET /nodes-v2)
-pub async fn list_nodes_v2(token: &str) -> Result<NodeV2ListResponse> {
+/// List user's nodes (GET /nodes)
+pub async fn list_nodes(token: &str) -> Result<NodeListResponse> {
     let client = Client::new();
     let res = client
-        .get(format!("{}/nodes-v2", BASE_URL))
+        .get(format!("{}/nodes", BASE_URL))
         .bearer_auth(token)
         .send()
         .await?;
@@ -411,11 +411,11 @@ pub async fn list_nodes_v2(token: &str) -> Result<NodeV2ListResponse> {
     handle_response(res).await
 }
 
-/// Get node by ID (GET /nodes-v2/:id)
-pub async fn get_node_v2(token: &str, node_id: u64) -> Result<NodeV2> {
+/// Get node by ID (GET /nodes/:id)
+pub async fn get_node(token: &str, node_id: u64) -> Result<Node> {
     let client = Client::new();
     let res = client
-        .get(format!("{}/nodes-v2/{}", BASE_URL, node_id))
+        .get(format!("{}/nodes/{}", BASE_URL, node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -423,11 +423,11 @@ pub async fn get_node_v2(token: &str, node_id: u64) -> Result<NodeV2> {
     handle_response(res).await
 }
 
-/// Delete node (DELETE /nodes-v2/:id)
-pub async fn delete_node_v2(token: &str, node_id: u64) -> Result<MessageResponse> {
+/// Delete node (DELETE /nodes/:id)
+pub async fn delete_node(token: &str, node_id: u64) -> Result<MessageResponse> {
     let client = Client::new();
     let res = client
-        .delete(format!("{}/nodes-v2/{}", BASE_URL, node_id))
+        .delete(format!("{}/nodes/{}", BASE_URL, node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -435,11 +435,11 @@ pub async fn delete_node_v2(token: &str, node_id: u64) -> Result<MessageResponse
     handle_response(res).await
 }
 
-/// Get CI key for node (GET /nodes-v2/:id/ci-key)
+/// Get CI key for node (GET /nodes/:id/ci-key)
 pub async fn get_node_ci_key(token: &str, node_id: u64) -> Result<CiKeyResponse> {
     let client = Client::new();
     let res = client
-        .get(format!("{}/nodes-v2/{}/ci-key", BASE_URL, node_id))
+        .get(format!("{}/nodes/{}/ci-key", BASE_URL, node_id))
         .bearer_auth(token)
         .send()
         .await?;

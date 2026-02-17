@@ -2,11 +2,10 @@ use crate::types::{OpsToml, DeployTarget};
 use crate::commands::common::resolve_env_value;
 use crate::commands::ssh::SshSession;
 use crate::commands::scp;
-use crate::{api, config};
-use anyhow::{anyhow, Context, Result};
+use crate::{api, config, prompt};
+use anyhow::{anyhow, bail, Context, Result};
 use colored::Colorize;
 use std::fs;
-use std::io::{self, Write};
 use std::path::Path;
 
 /// 读取并解析 ops.toml
@@ -90,7 +89,7 @@ async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Resul
     }
 
     // 2b. 没有 app → 查所有节点，过滤出绑定到该 project 的
-    let nodes = api::list_nodes_v2(&token).await?;
+    let nodes = api::list_nodes(&token).await?;
     let mut is_first = true;
     let targets: Vec<DeployTarget> = nodes.nodes.iter()
         .filter(|n| n.bound_apps.as_ref().map_or(false, |apps|
@@ -119,6 +118,67 @@ async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Resul
     Ok(targets)
 }
 
+/// 当没有绑定节点时，交互式让用户选择一个节点并自动绑定
+async fn auto_allocate_node(
+    config: &OpsToml,
+    app_filter: &Option<String>,
+    interactive: bool,
+) -> Result<Vec<DeployTarget>> {
+    if !interactive {
+        bail!("No nodes bound. Use `ops set <app.project> --node <id>` to bind a node first.");
+    }
+
+    let cfg = config::load_config().context("Config error")?;
+    let token = cfg.token.context("Please run `ops login` first.")?;
+
+    let res = api::list_nodes(&token).await?;
+    if res.nodes.is_empty() {
+        bail!("No nodes available. Initialize one with `ops init` first.");
+    }
+
+    // 构建选项列表
+    let options: Vec<String> = res.nodes.iter().map(|n| {
+        let name = n.hostname.as_deref().unwrap_or(&n.ip_address);
+        let region = n.region.as_deref().unwrap_or("-");
+        format!("#{} {} ({}) [{}]", n.id, name, region, n.status)
+    }).collect();
+    let option_refs: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
+
+    o_warn!("No nodes bound to this app. Select a node to deploy to:");
+    let choice = prompt::select("Select node", &option_refs, 0, interactive)?;
+    let selected = &res.nodes[choice];
+
+    // 解析 app 和 project
+    let project = config.project.as_ref().context("ops.toml must have 'project'")?;
+    let app_name = app_filter.as_ref()
+        .or(config.app.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            if config.apps.len() == 1 { config.apps[0].name.clone() }
+            else { project.clone() }
+        });
+
+    // 自动绑定
+    o_step!("Binding node #{} to {}.{}...", selected.id, app_name, project);
+    let bind_result = api::bind_node_by_name(
+        &token, project, &app_name,
+        selected.id as u64, true, None,
+    ).await?;
+    o_success!("   ✔ {}", bind_result.message);
+
+    Ok(vec![DeployTarget {
+        node_id: selected.id,
+        domain: selected.domain.clone(),
+        ip_address: selected.ip_address.clone(),
+        hostname: selected.hostname.clone(),
+        region: selected.region.clone(),
+        zone: selected.zone.clone(),
+        weight: 100,
+        is_primary: true,
+        status: selected.status.clone(),
+    }])
+}
+
 /// ops deploy 主入口
 pub async fn handle_deploy(
     file: String,
@@ -130,13 +190,20 @@ pub async fn handle_deploy(
     region_filter: Option<String>,
     rolling: bool,
     force: bool,
+    interactive: bool,
 ) -> Result<()> {
     // 1. 解析配置
     o_step!("{}", "📦 Reading ops.toml...".cyan());
     let config = load_ops_toml(&file)?;
 
     let app_name = resolve_app_name(&config)?;
-    let mut targets = resolve_targets(&config, &app_filter).await?;
+    let mut targets = match resolve_targets(&config, &app_filter).await {
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("No nodes bound") => {
+            auto_allocate_node(&config, &app_filter, interactive).await?
+        }
+        Err(e) => return Err(e),
+    };
 
     // 过滤目标节点
     if let Some(nid) = node_filter {
@@ -182,7 +249,7 @@ pub async fn handle_deploy(
     session.exec(&format!("mkdir -p {}", deploy_path), None)?;
 
     if !restart_only {
-        check_containers(&session, &config, &env_vars, force)?;
+        check_containers(&session, &config, &env_vars, force, interactive)?;
     }
 
     // 3. 同步 App 记录到后端
@@ -413,7 +480,7 @@ async fn execute_deployment(
 
     // Nginx 路由 + SSL
     if !config.routes.is_empty() && !restart_only {
-        generate_and_upload_nginx(config, session)?;
+        generate_and_upload_nginx(config, session, app_filter)?;
     }
 
     // 健康检查
@@ -590,25 +657,36 @@ async fn sync_directories(config: &OpsToml, session: &SshSession) -> Result<()> 
     Ok(())
 }
 
-fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession) -> Result<()> {
+fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession, app_filter: &Option<String>) -> Result<()> {
     o_step!("\n{}", "⚙️  Generating nginx config...".cyan());
 
-    let app_name = resolve_app_name(config)?;
+    // Determine the deployed app name for conf naming
+    // Priority: --app flag > config.app (legacy) > single [[apps]] entry > project name
+    let deployed_app = app_filter.as_ref()
+        .or(config.app.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            if config.apps.len() == 1 {
+                config.apps[0].name.clone()
+            } else {
+                resolve_app_name(config).unwrap_or_default()
+            }
+        });
+    let project_name = config.project.as_deref().unwrap_or(&deployed_app);
 
-    // Build *.ops.autos aliases from project + apps
-    let ops_autos_aliases: Vec<String> = if let Some(ref project) = config.project {
-        config.apps.iter().map(|a| format!("{}.{}.ops.autos", a.name, project)).collect()
+    // Build ops.autos alias for the current app only
+    let ops_autos_alias = if config.project.is_some() {
+        Some(format!("{}.{}.ops.autos", deployed_app, project_name))
     } else {
-        vec![]
+        None
     };
-    let aliases_str = ops_autos_aliases.join(" ");
 
     let mut nginx = String::new();
     for route in &config.routes {
-        let server_names = if aliases_str.is_empty() {
-            route.domain.clone()
+        let server_names = if let Some(ref alias) = ops_autos_alias {
+            format!("{} {}", route.domain, alias)
         } else {
-            format!("{} {}", route.domain, aliases_str)
+            route.domain.clone()
         };
 
         nginx.push_str(&format!(
@@ -639,13 +717,13 @@ fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession) -> Result<(
 
         o_detail!(
             "   ✔ {} → :{}",
-            route.domain.green(),
+            server_names.green(),
             route.port
         );
     }
 
-    // 上传 per-app 配置文件
-    let conf_name = format!("ops-{}.conf", app_name);
+    // 上传 per-app 配置文件: ops-{app}-{project}.conf
+    let conf_name = format!("ops-{}-{}.conf", deployed_app, project_name);
     session.exec(
         &format!("cat > /etc/nginx/sites-available/{}", conf_name),
         Some(&nginx),
@@ -687,6 +765,7 @@ fn check_containers(
     config: &OpsToml,
     env_vars: &[String],
     force: bool,
+    interactive: bool,
 ) -> Result<()> {
     let deploy_path = &config.deploy_path;
     let compose = compose_file_args(config);
@@ -754,23 +833,16 @@ fn check_containers(
         return Ok(());
     }
 
-    // 4. 交互式询问（Quiet 模式自动选择默认：继续部署）
-    if crate::output::verbosity() == crate::output::Verbosity::Quiet {
-        return Ok(()); // 默认行为 = 选项 1 = 继续部署
-    }
-
-    o_detail!("\n   {} Continue deploy", "1)".cyan());
-    o_detail!("   {} Clean & Deploy (docker compose down first)", "2)".cyan());
-    o_detail!("   {} Abort", "3)".cyan());
-    o_print!("\n   Select action [1]: ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let choice = input.trim();
+    // 4. 交互式询问（非交互模式自动选择默认：继续部署）
+    let options = &[
+        "Continue deploy",
+        "Clean & Deploy (docker compose down first)",
+        "Abort",
+    ];
+    let choice = prompt::select("Select action", options, 0, interactive)?;
 
     match choice {
-        "2" => {
+        1 => {
             o_step!("\n   {}", "Cleaning old containers...".yellow());
             let down_cmd = format!(
                 "cd {} && {}docker compose{} down --remove-orphans 2>/dev/null; true",
@@ -782,8 +854,8 @@ fn check_containers(
             o_success!("   {}", "✔ Old containers removed".green());
             Ok(())
         }
-        "3" => Err(anyhow!("Deployment aborted by user")),
-        _ => Ok(()), // "1" 或默认：继续
+        2 => Err(anyhow!("Deployment aborted by user")),
+        _ => Ok(()), // 0 = 继续部署
     }
 }
 

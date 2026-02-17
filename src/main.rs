@@ -4,10 +4,12 @@ use colored::Colorize;
 
 #[macro_use]
 mod output;
+mod prompt;
 
 mod api;
 mod commands;
 mod config;
+mod scanner;
 mod serve;
 mod ssh;
 mod types;
@@ -25,6 +27,10 @@ struct Cli {
     /// Show verbose/debug output
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Skip all confirmation prompts (accept defaults)
+    #[arg(short, long, global = true)]
+    yes: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -440,6 +446,12 @@ async fn main() -> Result<()> {
     };
     output::init(verbosity);
 
+    // Determine interactive mode: disabled by --yes, OPS_YES env, or non-TTY stdin
+    use std::io::IsTerminal;
+    let interactive = !cli.yes
+        && std::env::var("OPS_YES").is_err()
+        && std::io::stdin().is_terminal();
+
     // Auto-update check (skip for certain commands)
     if !matches!(
         &cli.command,
@@ -465,16 +477,17 @@ async fn main() -> Result<()> {
                 *port,
                 hostname.clone(),
                 compose_dir.clone(),
+                interactive,
             ).await,
 
         Commands::Node(cmd) => match cmd {
             NodeCommands::List => commands::node::handle_list().await,
             NodeCommands::Info { id } => commands::node::handle_info(*id).await,
-            NodeCommands::Remove { id, force } => commands::node::handle_remove(*id, *force).await,
+            NodeCommands::Remove { id, force } => commands::node::handle_remove(*id, *force, interactive).await,
         },
 
         Commands::Set { target, node, primary, region, zone, hostname, weight } =>
-            commands::set::handle_set(target.clone(), *node, *primary, region.clone(), zone.clone(), hostname.clone(), *weight).await,
+            commands::set::handle_set(target.clone(), *node, *primary, region.clone(), zone.clone(), hostname.clone(), *weight, interactive).await,
         Commands::Ssh { target, command } => commands::ssh::handle_ssh(target.clone(), command.clone()).await,
         Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
 
@@ -509,9 +522,9 @@ async fn main() -> Result<()> {
         },
         
         Commands::Launch { output, yes } =>
-            commands::launch::handle_launch(output.clone(), *yes).await,
+            commands::launch::handle_launch(output.clone(), interactive && !*yes).await,
         Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling, force } =>
-            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling, *force).await,
+            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling, *force, interactive).await,
         Commands::Build { file, git_ref, service, tag, no_push, jobs } =>
             commands::build::handle_build(file.clone(), git_ref.clone(), service.clone(), tag.clone(), *no_push, *jobs).await,
         Commands::Status { file } =>
@@ -535,7 +548,7 @@ async fn main() -> Result<()> {
             DomainCommands::Remove { domain, file } =>
                 commands::domain::handle_remove(file.clone(), domain.clone()).await,
             DomainCommands::Sync { file, app, prune, yes } =>
-                commands::domain::handle_sync(file.clone(), app.clone(), *prune, *yes).await,
+                commands::domain::handle_sync(file.clone(), app.clone(), *prune, interactive && !*yes).await,
         },
 
         Commands::Pool(cmd) => match cmd {
