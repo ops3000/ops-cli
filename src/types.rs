@@ -7,13 +7,6 @@ pub struct LoginResponse {
 
 
 #[derive(Deserialize, Debug)]
-pub struct NodeSetResponse {
-    pub message: String,
-    pub ci_ssh_public_key: String,
-}
-
-
-#[derive(Deserialize, Debug)]
 pub struct CiKeyResponse {
     pub private_key: String,
 }
@@ -87,15 +80,11 @@ fn default_source() -> String { "git".into() }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct OpsToml {
-    pub app: Option<String>,                    // 旧模式
-    pub project: Option<String>,                // 新：项目模式
-    pub target: Option<String>,                 // 旧模式必填，project 模式可选（自动解析）
+    pub project: String,
     pub deploy_path: String,
     pub deploy: DeployConfig,
     #[serde(default)]
-    pub apps: Vec<AppDef>,                      // 新：app 分组
-    #[serde(default)]
-    pub domains: Vec<String>,                   // legacy 模式自定义域名
+    pub apps: Vec<AppDef>,
     #[serde(default)]
     pub env_files: Vec<EnvFileMapping>,
     #[serde(default)]
@@ -104,7 +93,7 @@ pub struct OpsToml {
     pub routes: Vec<RouteDef>,
     #[serde(default)]
     pub healthchecks: Vec<HealthCheck>,
-    pub build: Option<BuildConfig>,             // 远程构建配置
+    pub build: Option<BuildConfig>,
 }
 
 
@@ -309,7 +298,7 @@ pub struct CreateNodeGroupResponse {
 
 
 #[derive(Deserialize, Debug)]
-pub struct NodeSetResponseV2 {
+pub struct NodeSetResponse {
     pub message: String,
     pub domain: String,
     pub node_id: i64,
@@ -319,7 +308,7 @@ pub struct NodeSetResponseV2 {
 }
 
 
-// ===== Nodes V2 API (Global Nodes) =====
+// ===== Nodes API =====
 
 #[derive(Deserialize, Debug)]
 pub struct NodeInitResponse {

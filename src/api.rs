@@ -1,10 +1,10 @@
-use reqwest::{Client, Response, StatusCode};
+use reqwest::{Client, Response};
 use anyhow::{anyhow, Context, Result};
 use crate::types::{
     ErrorResponse, LoginResponse, CiKeyResponse, RegisterResponse, WhoamiResponse,
-    ProjectResponse, ServerWhoamiResponse, NodeSetResponseV2, ProjectListResponse,
+    ProjectResponse, ServerWhoamiResponse, NodeSetResponse, ProjectListResponse,
     SyncAppResponse, CreateDeploymentResponse, UpdateDeploymentResponse,
-    OpsToml, RouteDef,
+    OpsToml,
     // Node Group types
     NodeGroupListResponse, NodeGroupDetailResponse, CreateNodeGroupResponse,
     // Node types
@@ -92,7 +92,7 @@ pub async fn set_node(
     zone: Option<&str>,
     hostname: Option<&str>,
     weight: Option<u8>,
-) -> Result<NodeSetResponseV2> {
+) -> Result<NodeSetResponse> {
     let client = Client::new();
     let mut body = serde_json::json!({
         "project": project,
@@ -123,13 +123,6 @@ pub async fn set_node(
     handle_response(res).await
 }
 
-pub async fn get_ci_private_key(token: &str, project: &str, environment: &str) -> Result<CiKeyResponse> {
-    let client = Client::new();
-    let url = format!("{}/nodes/{}/{}/ci-private-key", BASE_URL, project, environment);
-    let res = client.get(&url).bearer_auth(token).send().await?;
-    handle_response(res).await
-}
-
 // ===== App Sync API (for ops deploy) =====
 
 /// Extract "owner/repo" from git URL like "git@github.com:owner/repo.git"
@@ -151,11 +144,9 @@ fn extract_github_repo(git_url: &str) -> Option<String> {
 pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> {
     let client = Client::new();
 
-    let app_name = config.app.clone()
-        .or(config.project.clone())
-        .context("ops.toml must have 'app' or 'project'")?;
-
-    let target = config.target.clone().unwrap_or_default();
+    let app_name = config.apps.first()
+        .map(|a| a.name.clone())
+        .unwrap_or_else(|| config.project.clone());
 
     // Extract github_repo from git config
     let github_repo = config.deploy.git.as_ref()
@@ -174,7 +165,7 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
     let config_json = serde_json::to_string(config).ok();
 
     let body = serde_json::json!({
-        "target": target,
+        "project": config.project,
         "name": app_name,
         "deploy_path": config.deploy_path,
         "github_repo": github_repo,

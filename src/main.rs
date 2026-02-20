@@ -95,14 +95,14 @@ enum Commands {
         weight: Option<u8>,
     },
 
-    /// SSH into a server or execute a command (format: environment.project)
+    /// SSH into a server or execute a command (format: app.project)
     Ssh {
         target: String,
         /// (Optional) Command to execute on the remote server
         command: Option<String>,
     },
 
-    /// Push a file or directory to the server (format: source environment.project[:/remote/path])
+    /// Push a file or directory to the server (format: source app.project[:/remote/path])
     Push {
         source: String,
         target: String,
@@ -347,7 +347,7 @@ enum NodeGroupCommands {
     },
     /// List nodes in a specific environment
     Nodes {
-        /// Target in format: environment.project
+        /// Target in format: app.project
         target: String,
     },
 }
