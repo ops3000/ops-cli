@@ -1,5 +1,5 @@
 use crate::{api, config, utils};
-use crate::utils::TargetType;
+use crate::utils::Target;
 use anyhow::{Context, Result};
 use std::process::{Command, Stdio};
 use colored::Colorize;
@@ -9,7 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 /// 这是一个通用的 SSH 命令构建器，其他模块可以复用
 /// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::NamedTempFile)> {
-    let target = utils::parse_target_v2(target_str)?;
+    let target = utils::parse_target(target_str)?;
     let full_domain = target.domain();
     let ssh_target = format!("root@{}", full_domain);
 
@@ -20,11 +20,11 @@ pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::N
 
     // Get CI key based on target type
     let private_key = match &target {
-        TargetType::NodeId { id, .. } => {
+        Target::NodeId { id, .. } => {
             let key_resp = api::get_node_ci_key(&token, *id).await?;
             key_resp.private_key
         }
-        TargetType::AppTarget { app, project, .. } => {
+        Target::AppTarget { app, project, .. } => {
             let key_resp = api::get_app_ci_key(&token, project, app).await?;
             key_resp.private_key
         }
@@ -61,7 +61,7 @@ pub struct SshSession {
 impl SshSession {
     /// 建立会话：fetch CI key，创建 temp key file（只做一次）
     pub async fn connect(target_str: &str) -> Result<Self> {
-        let target = utils::parse_target_v2(target_str)?;
+        let target = utils::parse_target(target_str)?;
         let full_domain = target.domain();
         let ssh_target = format!("root@{}", full_domain);
 
@@ -71,11 +71,11 @@ impl SshSession {
         o_debug!("Fetching access credentials...");
 
         let private_key = match &target {
-            TargetType::NodeId { id, .. } => {
+            Target::NodeId { id, .. } => {
                 let key_resp = api::get_node_ci_key(&token, *id).await?;
                 key_resp.private_key
             }
-            TargetType::AppTarget { app, project, .. } => {
+            Target::AppTarget { app, project, .. } => {
                 let key_resp = api::get_app_ci_key(&token, project, app).await?;
                 key_resp.private_key
             }

@@ -158,6 +158,8 @@ pub struct AppDef {
     pub services: Vec<String>,
     #[serde(default)]
     pub domains: Vec<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 

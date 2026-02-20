@@ -43,6 +43,7 @@ All commands are invoked as `ops <command>`.
 | ------------------------------------ | ---------------------------------- |
 | [`set`](deployment.md#set)          | Bind a server to an app            |
 | [`deploy`](deployment.md#deploy)    | Deploy services from ops.toml      |
+| [`launch`](launch.md)              | Scan project and generate configs  |
 | [`build`](build.md#build)          | Remote build on a build node       |
 | [`status`](deployment.md#status)    | Show deployed service status       |
 | [`logs`](deployment.md#logs)        | View service logs                  |
@@ -54,6 +55,7 @@ All commands are invoked as `ops <command>`.
 | [`domain add`](domain.md#domain-add)      | Add a custom domain                |
 | [`domain list`](domain.md#domain-list)    | List custom domains                |
 | [`domain remove`](domain.md#domain-remove)| Remove a custom domain             |
+| [`domain sync`](domain.md#domain-sync)    | Sync ops.toml domains to backend   |
 
 ## Resource Pool
 
@@ -94,3 +96,11 @@ All commands are invoked as `ops <command>`.
 | [`server whoami`](server.md#server-whoami)   | Show current server info           |
 | [`update`](server.md#update)                 | Update OPS to latest version       |
 | [`version`](server.md#version)               | Show version info                  |
+
+## Global Options
+
+| Option        | Env Variable | Description                                                |
+| ------------- | ------------ | ---------------------------------------------------------- |
+| `-y, --yes`   | `OPS_YES=1`  | Non-interactive mode: accept defaults, skip confirmations  |
+
+When `--yes` is set (or `OPS_YES=1`, or no TTY is detected), all interactive prompts are skipped. Confirmations default to their safe value (usually No), and selection prompts use the first/default option. Destructive operations like `node remove` require `--force` in addition to `--yes`.

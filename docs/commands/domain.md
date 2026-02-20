@@ -83,3 +83,53 @@ ops domain remove <domain> [-f <file>]
 ```bash
 ops domain remove staging.example.com
 ```
+
+## domain sync
+
+Sync domains declared in `ops.toml` to the backend. Adds any domains listed in your config that aren't already registered. With `--prune`, also removes domains that exist in the backend but are not in `ops.toml`.
+
+```bash
+ops domain sync [OPTIONS]
+```
+
+**Options:**
+
+| Option       | Default    | Description                                    |
+| ------------ | ---------- | ---------------------------------------------- |
+| `-f, --file` | `ops.toml` | Path to config file                            |
+| `--prune`    |            | Remove domains not listed in ops.toml          |
+| `--app`      |            | Sync only a specific app (project mode)        |
+| `-y, --yes`  |            | Skip confirmation prompt                       |
+
+**Behavior:**
+
+- Without `--prune`: Only adds missing domains (safe, additive-only)
+- With `--prune`: Also removes extra domains. Prompts for confirmation (default No) unless `--yes` is passed
+
+Domains are declared in `ops.toml` under each app:
+
+```toml
+[[apps]]
+name = "api"
+domains = ["api.example.com", "api.example.org"]
+
+[[apps]]
+name = "web"
+domains = ["www.example.com"]
+```
+
+**Examples:**
+
+```bash
+# Add missing domains from ops.toml
+ops domain sync
+
+# Sync and remove extra domains (prompts for confirmation)
+ops domain sync --prune
+
+# Sync and prune without prompting
+ops domain sync --prune --yes
+
+# Sync only one app's domains
+ops domain sync --app api
+```

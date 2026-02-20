@@ -51,23 +51,18 @@ chmod 600 ~/.ssh/config"#,
     Ok(())
 }
 
-/// 解析构建节点，优先级：build.node → config.target → API 自动查询
+/// Resolve build node: build.node → API auto-query
 async fn resolve_build_node(config: &OpsToml, build: &BuildConfig) -> Result<String> {
     if let Some(id) = build.node {
         return Ok(id.to_string());
     }
-    if let Some(ref t) = config.target {
-        return Ok(t.clone());
-    }
-    let project = config.project.as_ref()
-        .or(config.app.as_ref())
-        .context("Cannot resolve build node: set build.node, target, or project in ops.toml")?;
+    let project = &config.project;
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
     let nodes = api::list_nodes(&token).await?;
     let node = nodes.nodes.iter()
         .find(|n| n.bound_apps.as_ref().map_or(false, |apps|
-            apps.iter().any(|a| &a.project_name == project)))
+            apps.iter().any(|a| a.project_name == *project)))
         .with_context(|| format!("No nodes found for project '{}'. Set build.node explicitly.", project))?;
     Ok(node.domain.clone())
 }
@@ -101,10 +96,7 @@ pub async fn handle_build(
     session.exec(&format!("mkdir -p {}", build.path), None)?;
 
     // 3. 同步代码
-    let project_name = config.project.as_ref()
-        .or(config.app.as_ref())
-        .context("ops.toml must have 'project' or 'app'")?;
-    sync_code(build, &session, &node, &git_ref, project_name).await?;
+    sync_code(build, &session, &node, &git_ref, &config.project).await?;
 
     // 4. 执行构建命令
     o_step!("\n{}", "🔨 Running build...".cyan());

@@ -1,7 +1,7 @@
 // src/commands/scp.rs
 
 use crate::{api, config, utils};
-use crate::utils::TargetType;
+use crate::utils::Target;
 use anyhow::{Context, Result};
 use std::process::Command;
 use colored::Colorize;
@@ -13,7 +13,7 @@ use std::path::Path;
 /// Supports both Node ID (e.g., "12345:/root/") and App target (e.g., "api.RedQ:/root/")
 pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     // 1. 解析目标
-    let target = utils::parse_target_v2(&target_str)?;
+    let target = utils::parse_target(&target_str)?;
     let full_domain = target.domain();
 
     // 默认为 /root/，如果用户未指定路径
@@ -30,11 +30,11 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
 
     // Get CI key based on target type
     let private_key = match &target {
-        TargetType::NodeId { id, .. } => {
+        Target::NodeId { id, .. } => {
             let key_resp = api::get_node_ci_key(&token, *id).await?;
             key_resp.private_key
         }
-        TargetType::AppTarget { app, project, .. } => {
+        Target::AppTarget { app, project, .. } => {
             let key_resp = api::get_app_ci_key(&token, project, app).await?;
             key_resp.private_key
         }

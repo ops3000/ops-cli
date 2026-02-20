@@ -74,6 +74,8 @@ fn cleanup_old_residue() -> Result<bool> {
     let cert_paths = [
         "/etc/ssl/certs/ops-serve.crt",
         "/etc/ssl/private/ops-serve.key",
+        "/etc/nginx/ssl/ops-serve.crt",
+        "/etc/nginx/ssl/ops-serve.key",
     ];
     for cert_path in &cert_paths {
         let path = Path::new(cert_path);
@@ -81,6 +83,22 @@ fn cleanup_old_residue() -> Result<bool> {
             found_residue = true;
             if fs::remove_file(path).is_ok() {
                 cleaned.push(cert_path.to_string());
+            }
+        }
+    }
+
+    // 4. Clean old Caddy route fragments
+    let caddy_routes = Path::new("/etc/caddy/routes.d");
+    if caddy_routes.exists() {
+        if let Ok(entries) = fs::read_dir(caddy_routes) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".caddy") {
+                    found_residue = true;
+                    if fs::remove_file(entry.path()).is_ok() {
+                        cleaned.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
             }
         }
     }
@@ -97,6 +115,10 @@ fn cleanup_old_residue() -> Result<bool> {
         if cleaned.iter().any(|p| p.contains("nginx")) {
             let _ = Command::new("systemctl").args(["reload", "nginx"]).status();
         }
+        // Reload Caddy if we modified its config
+        if cleaned.iter().any(|p| p.contains("caddy")) {
+            let _ = Command::new("systemctl").args(["reload", "caddy"]).status();
+        }
     }
 
     Ok(found_residue)
@@ -110,8 +132,6 @@ fn configure_serve_daemon(
     node_id: u64,
     compose_dir: &str,
 ) -> Result<()> {
-    let domain = format!("{}.node.ops.autos", node_id);
-
     o_step!("Configuring systemd service...");
 
     let service_content = format!(r#"[Unit]
@@ -162,53 +182,43 @@ WantedBy=multi-user.target
 
     o_success!("{}", "✔ ops-serve daemon installed and started".green());
 
-    // Configure nginx if available
-    if Path::new("/etc/nginx").exists() {
-        configure_nginx(&domain, port)?;
+    // Configure Caddy if available
+    if Path::new("/etc/caddy").exists() {
+        configure_caddy(port)?;
     }
 
     Ok(())
 }
 
-/// Configure nginx reverse proxy for ops serve
-fn configure_nginx(domain: &str, port: u16) -> Result<()> {
-    let nginx_config = format!(r#"server {{
-    listen 80;
-    server_name {};
+/// Configure Caddy reverse proxy for ops serve
+pub fn configure_caddy(port: u16) -> Result<()> {
+    let caddyfile = format!(r#":80 {{
+    import /etc/caddy/routes.d/*.caddy
 
-    location / {{
-        proxy_pass http://127.0.0.1:{};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }}
+    # Fallback: ops-serve daemon
+    reverse_proxy 127.0.0.1:{}
 }}
-"#, domain, port);
+"#, port);
 
-    let config_path = format!("/etc/nginx/sites-available/{}", domain);
-    let enabled_path = format!("/etc/nginx/sites-enabled/{}", domain);
+    fs::create_dir_all("/etc/caddy/routes.d")
+        .context("Failed to create /etc/caddy/routes.d")?;
 
-    fs::write(&config_path, &nginx_config)
-        .context("Failed to write nginx config")?;
+    fs::write("/etc/caddy/Caddyfile", &caddyfile)
+        .context("Failed to write Caddyfile")?;
 
-    if !Path::new(&enabled_path).exists() {
-        std::os::unix::fs::symlink(&config_path, &enabled_path)
-            .context("Failed to enable nginx site")?;
-    }
-
-    let test = Command::new("nginx")
-        .arg("-t")
+    let validate = Command::new("caddy")
+        .args(["validate", "--config", "/etc/caddy/Caddyfile"])
         .status()
-        .context("Failed to test nginx config")?;
+        .context("Failed to validate Caddy config")?;
 
-    if test.success() {
+    if validate.success() {
         Command::new("systemctl")
-            .args(["reload", "nginx"])
+            .args(["reload", "caddy"])
             .status()
-            .context("Failed to reload nginx")?;
-        o_success!("{}", format!("✔ nginx configured for {}", domain).green());
+            .context("Failed to reload Caddy")?;
+        o_success!("{}", "✔ Caddy configured".green());
     } else {
-        o_warn!("{}", "Warning: nginx config test failed".yellow());
+        o_warn!("{}", "Warning: Caddy config validation failed".yellow());
     }
 
     Ok(())

@@ -165,16 +165,23 @@ pub async fn handle_show(id: i64) -> Result<()> {
 pub async fn handle_nodes(target_str: String) -> Result<()> {
     let target = utils::parse_target(&target_str)?;
 
+    let (app, project) = match &target {
+        utils::Target::AppTarget { app, project, .. } => (app.clone(), project.clone()),
+        utils::Target::NodeId { .. } => {
+            anyhow::bail!("Expected app.project format (e.g., api.RedQ), not a node ID");
+        }
+    };
+
     let cfg = config::load_config().context("Could not load config. Please log in with `ops login`.")?;
     let token = cfg.token.context("You are not logged in. Please run `ops login` first.")?;
 
-    let res = api::get_nodes_in_env(&token, &target.project, &target.environment).await?;
+    let res = api::get_nodes_in_env(&token, &project, &app).await?;
 
     o_step!(
         "{} ({}.{}.ops.autos)",
         "Node Group".bold(),
-        target.environment.cyan(),
-        target.project.cyan()
+        app.cyan(),
+        project.cyan()
     );
     o_detail!();
     o_detail!("  Name:     {}", res.node_group.name);

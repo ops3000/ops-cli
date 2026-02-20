@@ -57,36 +57,22 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
 
     o_success!("   {} SSH connected", "✔".green());
 
-    // 6. Upload nginx config
-    o_step!("{}", "Configuring nginx...".cyan());
+    // 6. Upload Caddy route fragment
+    o_step!("{}", "Configuring Caddy route...".cyan());
 
-    let nginx_conf = format!(
-        r#"server {{
-    listen 80;
-    server_name {domain};
-
-    location / {{
-        proxy_pass http://127.0.0.1:{remote_port};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400;
-        proxy_buffering off;
-    }}
-}}
-"#,
-        domain = domain,
-        remote_port = remote_port,
+    let target_header = format!("{}.{}", subdomain, project_name);
+    let matcher_name = format!("ops_tunnel_{}_{}", subdomain, project_name).replace('-', "_");
+    let caddy_snippet = format!(
+        "# tunnel: {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+        target = target_header,
+        matcher = matcher_name,
+        port = remote_port,
     );
 
-    let conf_name = format!("ops-tunnel-{}-{}.conf", subdomain, project_name);
+    let conf_name = format!("ops-tunnel-{}-{}.caddy", subdomain, project_name);
 
     // Upload via SSH stdin
-    let upload_cmd = format!("cat > /etc/nginx/sites-available/{}", conf_name);
+    let upload_cmd = format!("mkdir -p /etc/caddy/routes.d && cat > /etc/caddy/routes.d/{}", conf_name);
     let mut child = Command::new("ssh")
         .arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
@@ -99,64 +85,36 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
         .stderr(Stdio::null())
         .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(nginx_conf.as_bytes())?;
+        stdin.write_all(caddy_snippet.as_bytes())?;
     }
     let status = child.wait()?;
     if !status.success() {
         let _ = api::delete_tunnel(&token, tunnel_id).await;
-        return Err(anyhow!("Failed to upload nginx config"));
+        return Err(anyhow!("Failed to upload Caddy route"));
     }
 
-    // Enable and reload nginx
-    let enable_cmd = format!(
-        "ln -sf /etc/nginx/sites-available/{conf} /etc/nginx/sites-enabled/ && nginx -t && systemctl reload nginx",
-        conf = conf_name,
-    );
+    // Validate and reload Caddy
+    let reload_cmd = "caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy";
     let status = Command::new("ssh")
         .arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
         .arg("-o").arg("UserKnownHostsFile=/dev/null")
         .arg("-o").arg("LogLevel=ERROR")
         .arg(&ssh_target)
-        .arg(&enable_cmd)
+        .arg(reload_cmd)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()?;
     if !status.success() {
-        let _ = cleanup_nginx(&key_path, &ssh_target, &conf_name);
+        let _ = cleanup_caddy(&key_path, &ssh_target, &conf_name);
         let _ = api::delete_tunnel(&token, tunnel_id).await;
-        return Err(anyhow!("Failed to enable nginx config"));
+        return Err(anyhow!("Failed to reload Caddy config"));
     }
 
-    o_success!("   {} nginx reloaded", "✔".green());
+    o_success!("   {} Caddy reloaded", "✔".green());
 
-    // 6.5. SSL via certbot
-    o_step!("{}", "Requesting SSL certificate...".cyan());
-    let certbot_cmd = format!(
-        "certbot --nginx -d {} --non-interactive --agree-tos --email admin@ops.autos",
-        domain
-    );
-    let certbot_status = Command::new("ssh")
-        .arg("-i").arg(&key_path)
-        .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("UserKnownHostsFile=/dev/null")
-        .arg("-o").arg("LogLevel=ERROR")
-        .arg(&ssh_target)
-        .arg(&certbot_cmd)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status();
-
-    let protocol = match certbot_status {
-        Ok(s) if s.success() => {
-            o_success!("   {} SSL certificate issued", "✔".green());
-            "https"
-        }
-        _ => {
-            o_warn!("   {} certbot failed, using HTTP", "⚠".yellow());
-            "http"
-        }
-    };
+    // SSL is handled by Cloudflare — always use https
+    let protocol = "https";
 
     // 7. Open SSH reverse tunnel
     o_result!("\n   {} {}", "Tunnel URL:".green().bold(), format!("{}://{}", protocol, domain).cyan().bold());
@@ -211,8 +169,8 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     }
 
     // 9. Cleanup
-    o_detail!("   Removing nginx config...");
-    let _ = cleanup_nginx(&key_path_clone, &ssh_target_clone, &conf_name_clone);
+    o_detail!("   Removing Caddy route...");
+    let _ = cleanup_caddy(&key_path_clone, &ssh_target_clone, &conf_name_clone);
 
     o_detail!("   Removing DNS record...");
     let _ = api::delete_tunnel(&token, tunnel_id).await;
@@ -221,10 +179,10 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     Ok(())
 }
 
-fn cleanup_nginx(key_path: &str, ssh_target: &str, conf_name: &str) -> Result<()> {
+fn cleanup_caddy(key_path: &str, ssh_target: &str, conf_name: &str) -> Result<()> {
     let cmd = format!(
-        "rm -f /etc/nginx/sites-enabled/{conf} /etc/nginx/sites-available/{conf} && nginx -t && systemctl reload nginx",
-        conf = conf_name,
+        "rm -f /etc/caddy/routes.d/{} && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy",
+        conf_name,
     );
     Command::new("ssh")
         .arg("-i").arg(key_path)

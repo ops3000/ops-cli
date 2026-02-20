@@ -164,6 +164,11 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
     // Convert config to JSON
     let config_json = serde_json::to_string(config).ok();
 
+    // Get port from the matching app definition
+    let port = config.apps.iter()
+        .find(|a| a.name == app_name)
+        .and_then(|a| a.port);
+
     let body = serde_json::json!({
         "project": config.project,
         "name": app_name,
@@ -172,6 +177,7 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
         "github_branch": config.deploy.branch.clone().unwrap_or_else(|| "main".to_string()),
         "routes": routes,
         "config_json": config_json,
+        "port": port,
     });
 
     let res = client

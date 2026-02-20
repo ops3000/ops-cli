@@ -56,8 +56,15 @@ ops deploy [OPTIONS]
 | `-f, --file`     | `ops.toml` | Path to config file                          |
 | `--service`      |            | Deploy only a specific docker-compose service |
 | `--app`          |            | Deploy only services in this app group       |
+| `--node`         |            | Deploy to a specific node only (by ID)       |
+| `--region`       |            | Deploy to nodes in a specific region only    |
+| `--rolling`      |            | Deploy nodes sequentially (one at a time)    |
 | `--restart-only` |            | Skip build/pull, only restart containers     |
+| `--force`        |            | Force clean deploy (remove containers first) |
 | `--set`          |            | Set env variable (`KEY=VALUE`), repeatable   |
+| `-y, --yes`      |            | Non-interactive mode                         |
+
+**Auto-allocate:** When no nodes are bound to the app and the command is running interactively, `ops deploy` will prompt you to select a node from your available nodes and automatically bind it before deploying. In non-interactive mode (`--yes`), it exits with an error asking you to use `ops set` first.
 
 **Deployment steps:**
 
@@ -100,6 +107,18 @@ ops deploy --restart-only --app api
 
 # Use custom config file
 ops deploy -f ops.prod.toml
+
+# Multi-node: deploy to all bound nodes (parallel)
+ops deploy
+
+# Multi-node: deploy to specific node only
+ops deploy --node 101
+
+# Multi-node: deploy to a specific region
+ops deploy --region ap-east
+
+# Multi-node: sequential deploy (one node at a time)
+ops deploy --rolling
 ```
 
 ## status

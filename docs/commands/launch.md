@@ -1,6 +1,6 @@
 # Launch
 
-Generate an `ops.toml` configuration file by scanning the current project directory.
+Scan the current project, auto-detect the framework, and generate deployment files (`Dockerfile`, `docker-compose.yml`, `.dockerignore`, `ops.toml`).
 
 ```bash
 ops launch [OPTIONS]
@@ -10,24 +10,41 @@ ops launch [OPTIONS]
 
 | Option         | Default    | Description                           |
 | -------------- | ---------- | ------------------------------------- |
-| `-o, --output` | `ops.toml` | Output file path                      |
+| `-o, --output` | `ops.toml` | Output file path for ops.toml         |
 | `-y, --yes`    |            | Accept all defaults without prompting |
 
 ## What It Does
 
-`ops launch` scans your project directory and interactively generates an `ops.toml` deployment config with sensible defaults. It detects:
+`ops launch` uses the project scanner (`scanner/` module) to detect your framework and generate production-ready deployment files. It runs a priority-ordered scan across 13 supported frameworks and generates four files:
 
-| File                    | Detection                                       |
-| ----------------------- | ----------------------------------------------- |
-| `docker-compose*.yml`   | Added to `compose_files`, suggests `source = "image"` |
-| `Dockerfile`            | Suggests `source = "push"`                      |
-| `.git/` + origin remote | Suggests `source = "git"`, fills `git.repo`     |
-| `Cargo.toml`            | Language: Rust                                  |
-| `package.json`          | Language: Node.js                               |
-| `go.mod`                | Language: Go                                    |
-| `requirements.txt`      | Language: Python                                |
-| `.env`                  | Auto-adds to `[[env_files]]`                    |
-| `Config.toml`, etc.     | Suggests adding to `[[sync]]`                   |
+| Generated File      | Description                                  |
+| ------------------- | -------------------------------------------- |
+| `Dockerfile`        | Multi-stage production build for your framework |
+| `docker-compose.yml`| Service definition with port mappings        |
+| `.dockerignore`     | Framework-appropriate excludes               |
+| `ops.toml`          | Project-mode deployment config (`[[apps]]`)  |
+
+Each file is skipped if it already exists in the project directory.
+
+## Supported Frameworks
+
+The scanner detects frameworks in priority order:
+
+| Category   | Framework     | Detection               | Docker Strategy              |
+| ---------- | ------------- | ----------------------- | ---------------------------- |
+| **Node.js**| Next.js       | `next` in package.json  | Standalone output mode       |
+| **Node.js**| Nuxt          | `nuxt` in package.json  | Nitro server build           |
+| **Node.js**| Remix         | `remix` in package.json | Production build             |
+| **Node.js**| Vite SPA      | `vite` in package.json  | nginx static serving         |
+| **Node.js**| Generic Node  | `package.json` exists   | npm start                    |
+| **Python** | Django        | `django` in requirements| gunicorn WSGI                |
+| **Python** | Flask         | `flask` in requirements | gunicorn WSGI                |
+| **Python** | FastAPI       | `fastapi` in requirements| uvicorn ASGI                |
+| **Python** | Generic Python| `requirements.txt`      | python main                  |
+| **Go**     | Go            | `go.mod` exists         | 2-stage alpine static binary |
+| **Rust**   | Rust          | `Cargo.toml` exists     | 2-stage with dep caching     |
+| **Static** | Static HTML   | `index.html` exists     | nginx:alpine                 |
+| —          | Dockerfile    | `Dockerfile` exists     | Uses existing Dockerfile     |
 
 ## Interactive Flow
 
@@ -38,35 +55,43 @@ $ ops launch
   ══════════
 
   Scanning project...
-  ✔ Detected: docker-compose.yml, docker-compose.prod.yml
-  ✔ Detected: .env
-  ✔ Language: Rust (Cargo.toml)
+  ✔ Detected: Next.js (package.json)
 
-  App name [my-project]:
-  Deploy source (git/push/image) [image]:
-  Deploy path [/opt/my-project]:
-  Target (e.g. prod.myproject, enter to skip):
+  Project name [my-app]:
+  App name [web]:
+  Deploy path [/opt/my-app]:
 
-  Found docker-compose files:
-    1. docker-compose.yml
-    2. docker-compose.prod.yml
-  Use these compose files? [Y/n]:
+  Generating files...
+  ✔ Dockerfile (Next.js standalone)
+  ✔ docker-compose.yml
+  ✔ .dockerignore
+  ✔ ops.toml
 
-  Found .env file. Sync to remote? [Y/n]:
-
-  Health check URL (enter to skip):
-
-  ✔ Generated ops.toml
+  Ready to deploy:
+    ops deploy
 ```
 
-## Source Detection Logic
+With `--yes`, all prompts accept defaults and files are generated non-interactively.
 
-The default deploy source is inferred from your project:
+## Generated Output
 
-- **`image`** — docker-compose files found, no Dockerfile (pull pre-built images)
-- **`push`** — Dockerfile found (rsync + build on server)
-- **`git`** — git remote configured (clone/pull on server)
-- **`push`** — fallback when nothing specific is detected
+Example output for a Next.js project:
+
+**ops.toml:**
+```toml
+[project]
+name = "my-app"
+
+[[apps]]
+name = "web"
+deploy_path = "/opt/my-app"
+
+[apps.deploy]
+source = "push"
+compose_files = ["docker-compose.yml"]
+```
+
+**Dockerfile** (framework-specific multi-stage build), **docker-compose.yml** (service definition), and **.dockerignore** (framework-appropriate excludes) are also generated with production-ready defaults.
 
 ## Examples
 
@@ -77,41 +102,8 @@ ops launch
 # Accept all defaults (CI-friendly)
 ops launch --yes
 
-# Generate to a custom file
+# Generate ops.toml to a custom path
 ops launch -o ops.prod.toml
-```
-
-## Generated Output
-
-Example output for a project with docker-compose and .env:
-
-```toml
-app = "my-api"
-deploy_path = "/opt/my-api"
-
-[deploy]
-source = "image"
-compose_files = ["docker-compose.yml", "docker-compose.prod.yml"]
-
-# [deploy.registry]
-# url = "ghcr.io"
-# token = "$GHCR_PAT"
-
-[[env_files]]
-local = ".env"
-remote = ".env"
-
-[[sync]]
-local = "./docker-compose.yml"
-remote = "docker-compose.yml"
-
-[[sync]]
-local = "./docker-compose.prod.yml"
-remote = "docker-compose.prod.yml"
-
-# [[healthchecks]]
-# name = "Health"
-# url = "http://localhost:8000/health"
 ```
 
 After generating, deploy with:

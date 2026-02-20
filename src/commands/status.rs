@@ -7,36 +7,35 @@ use colored::Colorize;
 pub async fn handle_status(file: String) -> Result<()> {
     let ops_config = load_ops_toml(&file)?;
 
-    let project = ops_config.project.as_deref()
-        .or(ops_config.app.as_deref());
-    let app = ops_config.app.as_deref()
-        .or(ops_config.project.as_deref());
+    let project = &ops_config.project;
+    let app = ops_config.apps.first()
+        .map(|a| a.name.as_str())
+        .unwrap_or(project.as_str());
 
-    // Try multi-node status if we have project+app and a token
-    if let (Some(project), Some(app)) = (project, app) {
-        if let Ok(cfg) = config::load_config() {
-            if let Some(ref token) = cfg.token {
-                if let Ok(resp) = api::get_app_deploy_targets(token, project, app).await {
-                    if resp.targets.len() > 1 {
-                        return show_multi_node_status(&ops_config, &resp).await;
-                    }
-                }
-            }
-        }
+    let cfg = config::load_config().context("Config error")?;
+    let token = cfg.token.context("Please run `ops login` first.")?;
+
+    let resp = api::get_app_deploy_targets(&token, project, app).await
+        .context("Failed to get deploy targets")?;
+
+    if resp.targets.is_empty() {
+        anyhow::bail!("No nodes bound to app '{}' in project '{}'", app, project);
     }
 
-    // Fallback: single-node status via SSH
-    let target = ops_config.target.as_deref()
-        .context("ops.toml must have 'target' for status command")?;
+    if resp.targets.len() > 1 {
+        return show_multi_node_status(&ops_config, &resp).await;
+    }
 
-    o_step!("{} {}\n", "📊 Status:".cyan(), target.green());
+    // Single-node status via SSH
+    let t = &resp.targets[0];
+    o_step!("{} {}\n", "📊 Status:".cyan(), t.domain.green());
 
     let cmd = format!(
         "cd {} && docker compose ps",
         ops_config.deploy_path
     );
 
-    ssh::execute_remote_command(target, &cmd, None).await?;
+    ssh::execute_remote_command(&t.domain, &cmd, None).await?;
     Ok(())
 }
 
@@ -44,8 +43,10 @@ async fn show_multi_node_status(
     config: &crate::types::OpsToml,
     resp: &crate::types::DeployTargetsResponse,
 ) -> Result<()> {
-    let app = config.app.as_deref().or(config.project.as_deref()).unwrap_or("?");
-    let project = config.project.as_deref().or(config.app.as_deref()).unwrap_or("?");
+    let app = config.apps.first()
+        .map(|a| a.name.as_str())
+        .unwrap_or(config.project.as_str());
+    let project = &config.project;
 
     let strategy = resp.lb_strategy.as_deref().unwrap_or("single");
     let node_count = resp.targets.len();

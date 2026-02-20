@@ -98,7 +98,7 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
     Ok(())
 }
 
-pub async fn handle_install(token: String, port: u16, compose_dir: String, domain: Option<String>) -> Result<()> {
+pub async fn handle_install(token: String, port: u16, compose_dir: String, _domain: Option<String>) -> Result<()> {
     let exe_path = std::env::current_exe()?;
     let service = format!(
         r#"[Unit]
@@ -143,77 +143,9 @@ WantedBy=multi-user.target
         }
     }
 
-    // Configure nginx reverse proxy if domain is provided
-    if let Some(domain) = domain {
-        // Generate self-signed certificate for Cloudflare Full SSL mode
-        let cert_dir = "/etc/nginx/ssl";
-        let cert_path = format!("{}/ops-serve.crt", cert_dir);
-        let key_path = format!("{}/ops-serve.key", cert_dir);
-
-        if !std::path::Path::new(&cert_path).exists() {
-            std::fs::create_dir_all(cert_dir)?;
-            let ssl_cmd = format!(
-                "openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-                 -keyout {} -out {} -subj '/CN=ops-serve'",
-                key_path, cert_path
-            );
-            let status = std::process::Command::new("sh")
-                .args(["-c", &ssl_cmd])
-                .status()?;
-            if status.success() {
-                o_success!("{} Generated self-signed SSL certificate", "✓".green());
-            } else {
-                o_error!("{} Failed to generate SSL certificate", "✗".red());
-            }
-        }
-
-        let nginx_conf = format!(
-            r#"server {{
-    listen 80;
-    listen 443 ssl;
-    server_name {domain};
-
-    ssl_certificate {cert_path};
-    ssl_certificate_key {key_path};
-
-    location / {{
-        proxy_pass http://127.0.0.1:{port};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-    }}
-}}"#
-        );
-
-        // Try sites-enabled first, fall back to conf.d
-        let nginx_path = if std::path::Path::new("/etc/nginx/sites-enabled").exists() {
-            "/etc/nginx/sites-enabled/ops-serve.conf"
-        } else {
-            "/etc/nginx/conf.d/ops-serve.conf"
-        };
-
-        std::fs::write(nginx_path, &nginx_conf)?;
-        o_success!("{} Wrote {}", "✓".green(), nginx_path);
-
-        let nginx_cmds = [
-            ("nginx -t", "Nginx config test passed"),
-            ("systemctl reload nginx", "Reloaded nginx"),
-        ];
-
-        for (cmd, msg) in &nginx_cmds {
-            let status = std::process::Command::new("sh")
-                .args(["-c", cmd])
-                .status()?;
-            if status.success() {
-                o_success!("{} {}", "✓".green(), msg);
-            } else {
-                o_error!("{} Failed: {}", "✗".red(), cmd);
-            }
-        }
+    // Configure Caddy reverse proxy if /etc/caddy exists
+    if std::path::Path::new("/etc/caddy").exists() {
+        crate::commands::init::configure_caddy(port)?;
     }
 
     Ok(())

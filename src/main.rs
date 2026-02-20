@@ -238,10 +238,10 @@ enum Commands {
         /// Docker Compose project directory
         #[arg(long)]
         compose_dir: String,
-        /// Install as systemd service and configure nginx reverse proxy
+        /// Install as systemd service and configure Caddy reverse proxy
         #[arg(long)]
         install: bool,
-        /// Domain for nginx reverse proxy (e.g. api.RedQ.ops.autos)
+        /// Domain for Caddy reverse proxy (e.g. api.RedQ.ops.autos)
         #[arg(long)]
         domain: Option<String>,
     },

@@ -8,7 +8,7 @@ use std::net::ToSocketAddrs;
 /// Resolve IP address for a target
 /// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn handle_ip(target_str: String) -> Result<()> {
-    let target = utils::parse_target_v2(&target_str)?;
+    let target = utils::parse_target(&target_str)?;
     let full_domain = target.domain();
 
     o_step!("Resolving IP for {}...", full_domain.cyan());

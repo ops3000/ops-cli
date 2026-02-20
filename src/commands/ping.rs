@@ -8,7 +8,7 @@ use std::process::Command;
 /// Ping a target
 /// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn handle_ping(target_str: String) -> Result<()> {
-    let target = utils::parse_target_v2(&target_str)?;
+    let target = utils::parse_target(&target_str)?;
     let full_domain = target.domain();
 
     o_step!("Pinging {}...", full_domain.cyan());

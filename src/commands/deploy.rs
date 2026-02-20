@@ -47,39 +47,22 @@ fn resolve_services(config: &OpsToml, app: &Option<String>, service: &Option<Str
     String::new()  // 空 = 所有 services
 }
 
-/// 解析 app 名称：优先 app 字段（旧模式），否则 project 字段
-fn resolve_app_name(config: &OpsToml) -> Result<String> {
-    config.app.clone()
-        .or(config.project.clone())
-        .context("ops.toml must have 'app' or 'project'")
+/// Resolve app name: first [[apps]] entry, otherwise project name
+fn resolve_app_name(config: &OpsToml) -> String {
+    config.apps.first()
+        .map(|a| a.name.clone())
+        .unwrap_or_else(|| config.project.clone())
 }
 
-/// 解析部署目标：优先用 ops.toml 的 target，否则从 API 查询所有目标节点
+/// Resolve deploy targets from API
 async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Result<Vec<DeployTarget>> {
-    // 1. 如果 ops.toml 有 target，包装为单节点
-    if let Some(ref t) = config.target {
-        return Ok(vec![DeployTarget {
-            node_id: 0,
-            domain: t.clone(),
-            ip_address: String::new(),
-            hostname: None,
-            region: None,
-            zone: None,
-            weight: 100,
-            is_primary: true,
-            status: "unknown".into(),
-        }]);
-    }
-
-    // 2. project 模式：从 API 获取部署目标
-    let project = config.project.as_ref()
-        .context("ops.toml must have 'target' or 'project'")?;
+    let project = &config.project;
 
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
 
-    // 2a. 指定了 app（--app 或 config.app）→ 走 app deploy targets API
-    if let Some(app_name) = app_filter.as_ref().or(config.app.as_ref()) {
+    // If --app specified or apps defined, use app deploy targets API
+    if let Some(app_name) = app_filter.as_ref() {
         let resp = api::get_app_deploy_targets(&token, project, app_name).await
             .with_context(|| format!("Failed to get deploy targets for '{}' in project '{}'", app_name, project))?;
         if resp.targets.is_empty() {
@@ -88,12 +71,21 @@ async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Resul
         return Ok(resp.targets);
     }
 
-    // 2b. 没有 app → 查所有节点，过滤出绑定到该 project 的
+    // Try first app from config, otherwise use project name
+    let app_name = resolve_app_name(config);
+    let resp = api::get_app_deploy_targets(&token, project, &app_name).await;
+    if let Ok(resp) = resp {
+        if !resp.targets.is_empty() {
+            return Ok(resp.targets);
+        }
+    }
+
+    // Fallback: list all nodes bound to this project
     let nodes = api::list_nodes(&token).await?;
     let mut is_first = true;
     let targets: Vec<DeployTarget> = nodes.nodes.iter()
         .filter(|n| n.bound_apps.as_ref().map_or(false, |apps|
-            apps.iter().any(|a| &a.project_name == project)))
+            apps.iter().any(|a| a.project_name == *project)))
         .map(|n| {
             let primary = is_first;
             is_first = false;
@@ -112,7 +104,7 @@ async fn resolve_targets(config: &OpsToml, app_filter: &Option<String>) -> Resul
         .collect();
 
     if targets.is_empty() {
-        return Err(anyhow!("No nodes bound to project '{}'. Bind a node first or set 'target' in ops.toml.", project));
+        return Err(anyhow!("No nodes bound to project '{}'. Bind a node first with `ops set <app.project> --node <id>`.", project));
     }
 
     Ok(targets)
@@ -148,15 +140,11 @@ async fn auto_allocate_node(
     let choice = prompt::select("Select node", &option_refs, 0, interactive)?;
     let selected = &res.nodes[choice];
 
-    // 解析 app 和 project
-    let project = config.project.as_ref().context("ops.toml must have 'project'")?;
+    // Resolve app and project
+    let project = &config.project;
     let app_name = app_filter.as_ref()
-        .or(config.app.as_ref())
         .cloned()
-        .unwrap_or_else(|| {
-            if config.apps.len() == 1 { config.apps[0].name.clone() }
-            else { project.clone() }
-        });
+        .unwrap_or_else(|| resolve_app_name(config));
 
     // 自动绑定
     o_step!("Binding node #{} to {}.{}...", selected.id, app_name, project);
@@ -196,7 +184,7 @@ pub async fn handle_deploy(
     o_step!("{}", "📦 Reading ops.toml...".cyan());
     let config = load_ops_toml(&file)?;
 
-    let app_name = resolve_app_name(&config)?;
+    let app_name = resolve_app_name(&config);
     let mut targets = match resolve_targets(&config, &app_filter).await {
         Ok(t) => t,
         Err(e) if e.to_string().contains("No nodes bound") => {
@@ -244,7 +232,7 @@ pub async fn handle_deploy(
     }
 
     // 2. 连接 + 部署前检查（紧跟 App/Target 后面输出）
-    let session = SshSession::connect(&targets[0].domain).await?;
+    let session = SshSession::connect(&targets[0].node_id.to_string()).await?;
     let deploy_path = &config.deploy_path;
     session.exec(&format!("mkdir -p {}", deploy_path), None)?;
 
@@ -279,7 +267,7 @@ pub async fn handle_deploy(
                 "🚀".cyan(), i + 1, total, t.domain.cyan(), region_str);
 
             let deploy_path = &config.deploy_path;
-            let session = match SshSession::connect(&t.domain).await {
+            let session = match SshSession::connect(&t.node_id.to_string()).await {
                 Ok(s) => s,
                 Err(e) => {
                     o_error!("   {} {} ({}): {}", "✘".red(), t.domain, region_str, e);
@@ -324,10 +312,11 @@ pub async fn handle_deploy(
             let ev = env_vars.clone();
             let domain = t.domain.clone();
             let region = t.region.clone();
+            let node_id = t.node_id;
 
             join_set.spawn(async move {
                 let deploy_path = &config.deploy_path;
-                let session = match SshSession::connect(&domain).await {
+                let session = match SshSession::connect(&node_id.to_string()).await {
                     Ok(s) => s,
                     Err(e) => return (domain, region, Err(e)),
                 };
@@ -478,9 +467,9 @@ async fn execute_deployment(
     // 构建 & 启动
     build_and_start(config, session, service_filter, app_filter, restart_only, env_vars)?;
 
-    // Nginx 路由 + SSL
-    if !config.routes.is_empty() && !restart_only {
-        generate_and_upload_nginx(config, session, app_filter)?;
+    // Caddy 路由
+    if !restart_only {
+        upload_caddy_routes(config, session, app_filter)?;
     }
 
     // 健康检查
@@ -565,7 +554,7 @@ fn sync_code(
                 // 初次 clone — 先配置 deploy key
                 if let Some(key_path) = &git.ssh_key {
                     let expanded = shellexpand::tilde(key_path).to_string();
-                    let project_name = resolve_app_name(config)?;
+                    let project_name = resolve_app_name(config);
                     setup_deploy_key(session, &expanded, &project_name)?;
                 }
                 let cmd = format!(
@@ -657,103 +646,102 @@ async fn sync_directories(config: &OpsToml, session: &SshSession) -> Result<()> 
     Ok(())
 }
 
-fn generate_and_upload_nginx(config: &OpsToml, session: &SshSession, app_filter: &Option<String>) -> Result<()> {
-    o_step!("\n{}", "⚙️  Generating nginx config...".cyan());
+/// Upload Caddy route fragments for each app
+fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Option<String>) -> Result<()> {
+    let project_name = &config.project;
 
-    // Determine the deployed app name for conf naming
-    // Priority: --app flag > config.app (legacy) > single [[apps]] entry > project name
-    let deployed_app = app_filter.as_ref()
-        .or(config.app.as_ref())
-        .cloned()
-        .unwrap_or_else(|| {
-            if config.apps.len() == 1 {
-                config.apps[0].name.clone()
-            } else {
-                resolve_app_name(config).unwrap_or_default()
-            }
-        });
-    let project_name = config.project.as_deref().unwrap_or(&deployed_app);
+    // Ensure routes directory exists
+    session.exec("mkdir -p /etc/caddy/routes.d", None)?;
 
-    // Build ops.autos alias for the current app only
-    let ops_autos_alias = if config.project.is_some() {
-        Some(format!("{}.{}.ops.autos", deployed_app, project_name))
-    } else {
-        None
-    };
+    // Collect app → port mappings from [[routes]] (legacy) and [[apps]]
+    let mut routes_written = false;
 
-    let mut nginx = String::new();
-    for route in &config.routes {
-        let server_names = if let Some(ref alias) = ops_autos_alias {
-            format!("{} {}", route.domain, alias)
+    // Handle legacy [[routes]]
+    if !config.routes.is_empty() {
+        let deployed_app = app_filter.as_ref()
+            .cloned()
+            .unwrap_or_else(|| resolve_app_name(config));
+
+        o_step!("\n{}", "⚙️  Generating Caddy routes...".cyan());
+
+        // Group routes by port to determine if we need domain-based matching
+        let first_port = config.routes[0].port;
+        let all_same_port = config.routes.iter().all(|r| r.port == first_port);
+
+        if all_same_port {
+            // All routes share the same port — use X-OPS-Target matcher
+            let target = format!("{}.{}", deployed_app, project_name);
+            let matcher_name = format!("ops_{}_{}", deployed_app, project_name).replace('-', "_");
+            let caddy_snippet = format!(
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                target = target,
+                matcher = matcher_name,
+                port = first_port,
+            );
+            let conf_name = format!("ops-{}-{}.caddy", deployed_app, project_name);
+            session.exec(
+                &format!("cat > /etc/caddy/routes.d/{}", conf_name),
+                Some(&caddy_snippet),
+            )?;
+            o_detail!("   ✔ {} → :{}", target.green(), first_port);
         } else {
-            route.domain.clone()
-        };
-
-        nginx.push_str(&format!(
-            r#"server {{
-    listen 80;
-    server_name {domain};
-
-    location / {{
-        proxy_pass http://127.0.0.1:{port};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 86400;
-        proxy_buffering off;
-        proxy_cache off;
-        chunked_transfer_encoding on;
-    }}
-}}
-
-"#,
-            domain = server_names,
-            port = route.port
-        ));
-
-        o_detail!(
-            "   ✔ {} → :{}",
-            server_names.green(),
-            route.port
-        );
+            // Different ports per route — use X-Forwarded-Host for domain-based matching
+            for route in &config.routes {
+                let safe_domain = route.domain.replace('.', "_").replace('-', "_");
+                let matcher_name = format!("ops_route_{}", safe_domain);
+                let caddy_snippet = format!(
+                    "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                    domain = route.domain,
+                    matcher = matcher_name,
+                    port = route.port,
+                );
+                let conf_name = format!("ops-route-{}.caddy", safe_domain);
+                session.exec(
+                    &format!("cat > /etc/caddy/routes.d/{}", conf_name),
+                    Some(&caddy_snippet),
+                )?;
+                o_detail!("   ✔ {} → :{}", route.domain.green(), route.port);
+            }
+        }
+        routes_written = true;
     }
 
-    // 上传 per-app 配置文件: ops-{app}-{project}.conf
-    let conf_name = format!("ops-{}-{}.conf", deployed_app, project_name);
-    session.exec(
-        &format!("cat > /etc/nginx/sites-available/{}", conf_name),
-        Some(&nginx),
-    )?;
+    // Handle [[apps]] with port
+    let apps_to_process: Vec<_> = if let Some(ref filter) = app_filter {
+        config.apps.iter().filter(|a| a.name == *filter).collect()
+    } else {
+        config.apps.iter().collect()
+    };
+    let apps_with_port: Vec<_> = apps_to_process.iter().filter(|a| a.port.is_some()).collect();
 
-    // 启用 & reload
-    session.exec(
-        &format!("ln -sf /etc/nginx/sites-available/{conf} /etc/nginx/sites-enabled/ && nginx -t && systemctl reload nginx", conf = conf_name),
-        None,
-    )?;
+    if !apps_with_port.is_empty() {
+        if !routes_written {
+            o_step!("\n{}", "⚙️  Generating Caddy routes...".cyan());
+        }
 
-    // SSL (certbot)
-    let ssl_domains: Vec<&str> = config
-        .routes
-        .iter()
-        .filter(|r| r.ssl)
-        .map(|r| r.domain.as_str())
-        .collect();
+        for app in &apps_with_port {
+            let port = app.port.unwrap();
+            let target = format!("{}.{}", app.name, project_name);
+            let matcher_name = format!("ops_{}_{}", app.name, project_name).replace('-', "_");
+            let caddy_snippet = format!(
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                target = target,
+                matcher = matcher_name,
+                port = port,
+            );
+            let conf_name = format!("ops-{}-{}.caddy", app.name, project_name);
+            session.exec(
+                &format!("cat > /etc/caddy/routes.d/{}", conf_name),
+                Some(&caddy_snippet),
+            )?;
+            o_detail!("   ✔ {} → :{}", target.green(), port);
+        }
+        routes_written = true;
+    }
 
-    if !ssl_domains.is_empty() {
-        let domain_args = ssl_domains
-            .iter()
-            .map(|d| format!("-d {}", d))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let certbot_cmd = format!(
-            "which certbot > /dev/null 2>&1 && certbot --nginx {} --non-interactive --agree-tos --email admin@{} || echo 'certbot not installed, skipping SSL'",
-            domain_args, ssl_domains[0]
-        );
-        session.exec(&certbot_cmd, None)?;
+    if routes_written {
+        // Validate & reload Caddy
+        session.exec("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy", None)?;
     }
 
     Ok(())
@@ -849,8 +837,6 @@ fn check_containers(
                 deploy_path, env, compose_arg
             );
             session.exec(&down_cmd, None)?;
-            // 如果仍有同名容器残留（来自其他 compose project），强制删除
-            session.exec("docker rm -f $(docker ps -aq) 2>/dev/null; true", None)?;
             o_success!("   {}", "✔ Old containers removed".green());
             Ok(())
         }

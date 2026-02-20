@@ -7,15 +7,7 @@ use crate::types::OpsToml;
 
 /// Resolve (project, app) from ops.toml + optional --app flag.
 fn resolve_project_app(ops_config: &OpsToml, app_flag: Option<&str>) -> Result<(String, String)> {
-    // Legacy mode: top-level `app` field
-    if let Some(ref app) = ops_config.app {
-        let project = ops_config.project.as_ref().unwrap_or(app);
-        return Ok((project.clone(), app.clone()));
-    }
-
-    // Project mode
-    let project = ops_config.project.as_ref()
-        .context("ops.toml must have 'project' or 'app'")?;
+    let project = &ops_config.project;
 
     let app_name = if let Some(name) = app_flag {
         if !ops_config.apps.is_empty()
@@ -29,7 +21,7 @@ fn resolve_project_app(ops_config: &OpsToml, app_flag: Option<&str>) -> Result<(
     } else if ops_config.apps.len() == 1 {
         ops_config.apps[0].name.clone()
     } else if ops_config.apps.is_empty() {
-        bail!("No [[apps]] defined in ops.toml. Use --app to specify the app name.");
+        project.clone()
     } else {
         bail!("Multiple apps in ops.toml. Use --app to specify which one.\nAvailable: {}",
             ops_config.apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "));
@@ -41,19 +33,7 @@ fn resolve_project_app(ops_config: &OpsToml, app_flag: Option<&str>) -> Result<(
 /// Build sync targets: Vec<(project, app_name, desired_domains)>
 fn build_sync_targets(ops_config: &OpsToml, app_flag: Option<&str>) -> Result<Vec<(String, String, Vec<String>)>> {
     let mut targets = Vec::new();
-
-    // Legacy mode
-    if let Some(ref app) = ops_config.app {
-        let project = ops_config.project.as_ref().unwrap_or(app);
-        if !ops_config.domains.is_empty() {
-            targets.push((project.clone(), app.clone(), ops_config.domains.clone()));
-        }
-        return Ok(targets);
-    }
-
-    // Project mode
-    let project = ops_config.project.as_ref()
-        .context("ops.toml must have 'project' or 'app'")?;
+    let project = &ops_config.project;
 
     if let Some(name) = app_flag {
         let app_def = ops_config.apps.iter().find(|a| a.name == name)

@@ -90,7 +90,30 @@ ops node remove <id> [--force]
 
 **Arguments:**
 
-| Argument  | Description                    |
-| --------- | ------------------------------ |
-| `id`      | Node ID                        |
-| `--force` | Skip deletion confirmation     |
+| Argument | Description |
+| -------- | ----------- |
+| `id`     | Node ID     |
+
+**Options:**
+
+| Option    | Description                                        |
+| --------- | -------------------------------------------------- |
+| `--force` | Skip confirmation (required in non-interactive mode) |
+
+**Confirmation behavior:**
+
+- **Interactive mode** (default): Prompts for confirmation (default No). The user must explicitly confirm deletion.
+- **Non-interactive mode** (`--yes` flag, `OPS_YES=1`, or no TTY): Requires `--force` to proceed. Without `--force`, the command exits with an error to prevent accidental deletions in scripts and CI.
+
+**Examples:**
+
+```bash
+# Interactive — prompts for confirmation
+ops node remove 42
+
+# Non-interactive — must use --force
+ops node remove 42 --yes --force
+
+# CI/scripts — also requires --force
+OPS_YES=1 ops node remove 42 --force
+```
