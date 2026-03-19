@@ -571,7 +571,7 @@ fn deploy_app_zero_downtime(
         // 3. Generate env file from compose config
         let env_file = format!("{}/.ops-env-{}", deploy_path, svc);
         let gen_env_cmd = format!(
-            "cd {} && docker compose config --format json 2>/dev/null | python3 -c \"import sys,json; svc=json.load(sys.stdin)['services'].get('{}',{{}}); [print(f'{{{{k}}}}={{{{v}}}}') for k,v in svc.get('environment',{{}}).items()]\" > {} 2>/dev/null; cat {}",
+            "cd {} && docker compose config --format json 2>/dev/null | python3 -c 'import sys,json; svc=json.load(sys.stdin)[\"services\"].get(\"{}\",{{}}); [print(str(k)+\"=\"+str(v)) for k,v in svc.get(\"environment\",{{}}).items()]' > {} 2>/dev/null; cat {}",
             deploy_path, svc, env_file, env_file
         );
         let env_out = session.exec_output(&gen_env_cmd).unwrap_or_default();
