@@ -215,7 +215,16 @@ pub struct RouteDef {
 pub struct HealthCheck {
     pub name: String,
     pub url: String,
+    #[serde(default = "default_retries")]
+    pub retries: u32,
+    #[serde(default = "default_interval")]
+    pub interval: u32,
+    #[serde(default)]
+    pub initial_delay: u32,
 }
+
+fn default_retries() -> u32 { 10 }
+fn default_interval() -> u32 { 2 }
 
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -593,9 +593,23 @@ fn deploy_app_zero_downtime(
 
         // 6. Health check
         o_step!("\n{}", "💚 Health check...".cyan());
+        let hc = config.healthchecks.iter().find(|h| h.name == app.name);
+        let health_path = hc
+            .map(|h| {
+                // Extract path from URL: "https://example.com/api/v1/health" -> "/api/v1/health"
+                h.url.splitn(4, '/').nth(3).map(|p| format!("/{}", p)).unwrap_or_else(|| "/status".into())
+            })
+            .unwrap_or_else(|| "/status".into());
+        let retries = hc.map(|h| h.retries).unwrap_or(10);
+        let interval = hc.map(|h| h.interval).unwrap_or(2);
+        let initial_delay = hc.map(|h| h.initial_delay).unwrap_or(0);
+        let health_url = format!("http://{}:{}{}", ip, port, health_path);
+        o_detail!("   url: {}  retries: {}  interval: {}s  delay: {}s", health_url, retries, interval, initial_delay);
+        let delay_cmd = if initial_delay > 0 { format!("sleep {}; ", initial_delay) } else { String::new() };
+        let seq = (1..=retries).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
         let health_cmd = format!(
-            "for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf http://{}:{}/status > /dev/null && echo 'OK' && exit 0; sleep 2; done; echo 'FAIL'; exit 1",
-            ip, port
+            "{}for i in {}; do curl -sf {} > /dev/null && echo 'OK' && exit 0; sleep {}; done; echo 'FAIL'; exit 1",
+            delay_cmd, seq, health_url, interval
         );
         if let Err(_) = session.exec(&health_cmd, None) {
             o_warn!("   {} Health check failed, rolling back", "✘".red());
@@ -1484,9 +1498,11 @@ fn run_health_checks(config: &OpsToml, session: &SshSession) -> Result<()> {
     o_step!("\n{}", "💚 Health checks:".cyan());
 
     for hc in &config.healthchecks {
+        let seq = (1..=hc.retries).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
+        let delay_cmd = if hc.initial_delay > 0 { format!("sleep {}; ", hc.initial_delay) } else { String::new() };
         let cmd = format!(
-            "for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf {} > /dev/null && echo 'OK' && exit 0; sleep 2; done; echo 'FAIL'; exit 1",
-            hc.url
+            "{}for i in {}; do curl -sf {} > /dev/null && echo 'OK' && exit 0; sleep {}; done; echo 'FAIL'; exit 1",
+            delay_cmd, seq, hc.url, hc.interval
         );
         let output = session.exec_output(&cmd);
         match output {
