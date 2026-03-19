@@ -1,4 +1,4 @@
-use crate::types::{OpsToml, DeployTarget};
+use crate::types::{OpsToml, DeployTarget, AppDef};
 use crate::commands::common::resolve_env_value;
 use crate::commands::ssh::SshSession;
 use crate::commands::scp;
@@ -178,6 +178,8 @@ pub async fn handle_deploy(
     region_filter: Option<String>,
     rolling: bool,
     force: bool,
+    no_pull: bool,
+    init: bool,
     interactive: bool,
 ) -> Result<()> {
     // 1. 解析配置
@@ -246,7 +248,7 @@ pub async fn handle_deploy(
     // 4. 部署到所有节点
     if targets.len() == 1 {
         let deploy_result = execute_deployment(
-            &config, &session, &service_filter, &app_filter, restart_only, &env_vars,
+            &config, &session, &service_filter, &app_filter, restart_only, &env_vars, no_pull, init, deployment_id,
         ).await;
 
         if let Some(deployment_id) = deployment_id {
@@ -282,7 +284,7 @@ pub async fn handle_deploy(
                 continue;
             }
 
-            match execute_deployment(&config, &session, &service_filter, &app_filter, restart_only, &env_vars).await {
+            match execute_deployment(&config, &session, &service_filter, &app_filter, restart_only, &env_vars, no_pull, init, deployment_id).await {
                 Ok(_) => {
                     o_success!("   {} {} ({})", "✔".green(), t.domain.green(), region_str);
                     success_count += 1;
@@ -323,7 +325,7 @@ pub async fn handle_deploy(
                 if let Err(e) = session.exec(&format!("mkdir -p {}", deploy_path), None) {
                     return (domain.clone(), region, Err(e.into()));
                 }
-                let result = execute_deployment(&config, &session, &sf, &af, restart_only, &ev).await;
+                let result = execute_deployment(&config, &session, &sf, &af, restart_only, &ev, no_pull, init, deployment_id).await;
                 (domain, region, result)
             });
         }
@@ -454,26 +456,267 @@ async fn execute_deployment(
     app_filter: &Option<String>,
     restart_only: bool,
     env_vars: &[String],
+    no_pull: bool,
+    init: bool,
+    deployment_id: Option<i64>,
 ) -> Result<()> {
-    // 先同步文件（compose 文件、env 文件等 — image 模式需要 compose 文件已存在才能 pull）
     sync_env_files(config, session)?;
     sync_directories(config, session).await?;
 
-    // 同步代码 / 拉镜像
     if !restart_only {
         sync_code(config, session, app_filter, service_filter, env_vars)?;
     }
 
-    // 构建 & 启动
-    build_and_start(config, session, service_filter, app_filter, restart_only, env_vars)?;
+    let deploy_path = &config.deploy_path;
+    let project = &config.project;
+    let env = env_prefix(env_vars);
+    let compose_arg = {
+        let compose = compose_file_args(config);
+        if compose.is_empty() { String::new() } else { format!(" {}", compose) }
+    };
 
-    // Caddy 路由
+    // Collect app services vs infra services
+    let app_svcs = collect_app_services(config);
+    let infra_svcs = collect_infra_services(config, session, env_vars)?;
+
+    // Start infra (shared, not versioned)
+    if !infra_svcs.is_empty() && !restart_only {
+        let infra_list = infra_svcs.join(" ");
+        o_step!("\n{}", "🔧 Ensuring infrastructure...".cyan());
+        let cmd = format!(
+            "cd {} && {}docker compose -p {} {} up -d --no-deps {}",
+            deploy_path, env, project, compose_arg.trim(), infra_list
+        );
+        session.exec(&cmd, None)?;
+    }
+
+    // Deploy each app with deploy-id
+    let apps_with_port: Vec<_> = config.apps.iter()
+        .filter(|a| a.port.is_some())
+        .filter(|a| app_filter.is_none() || app_filter.as_ref() == Some(&a.name))
+        .collect();
+
+    if let Some(did) = deployment_id {
+        if !restart_only && !apps_with_port.is_empty() {
+            for app in &apps_with_port {
+                deploy_app_zero_downtime(config, session, did, app, &env, &compose_arg, no_pull)?;
+            }
+
+            if init {
+                // Run init on new containers
+                for step in &config.init {
+                    if app_svcs.contains(&step.service) {
+                        for command in step.all_commands() {
+                            // Find the new container name
+                            let container = format!("{}-{}-{}", project, step.service, did);
+                            o_detail!("   {} → {}", step.service.yellow(), command);
+                            session.exec(&format!("docker exec {} {}", container, command), None)?;
+                        }
+                    }
+                }
+            }
+
+            return Ok(());
+        }
+    }
+
+    // Fallback: traditional build + up (for restart_only or no deployment_id)
+    build_and_start(config, session, service_filter, app_filter, restart_only, env_vars, no_pull)?;
+
+    if init {
+        run_init_commands(config, session, env_vars)?;
+    }
+
     if !restart_only {
         upload_caddy_routes(config, session, app_filter)?;
     }
 
-    // 健康检查
     run_health_checks(config, session)?;
+
+    Ok(())
+}
+
+/// Zero-downtime deploy: start new container with deploy_id, health check, switch Caddy, stop old
+fn deploy_app_zero_downtime(
+    config: &OpsToml,
+    session: &SshSession,
+    deployment_id: i64,
+    app: &AppDef,
+    env: &str,
+    compose_arg: &str,
+    no_pull: bool,
+) -> Result<()> {
+    let project = &config.project;
+    let deploy_path = &config.deploy_path;
+    let port = app.port.unwrap();
+    let active_file = format!("{}/.ops-active-deployment", deploy_path);
+    let svc_list: String = app.services.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" ");
+
+    // 1. Build image
+    o_step!("\n{}", "🔨 Building images...".cyan());
+    let pull_arg = if no_pull { "" } else { " --pull" };
+    let build_cmd = format!(
+        "cd {} && {}docker compose -p {} {} build{} {}",
+        deploy_path, env, project, compose_arg.trim(), pull_arg, svc_list
+    );
+    session.exec(&build_cmd, None)?;
+
+    for svc in &app.services {
+        let image = format!("{}-{}:latest", project, svc);
+        let new_name = format!("{}-{}-{}", project, svc, deployment_id);
+
+        // 2. Detect network
+        let network = detect_network(session, project)?;
+
+        // 3. Build env args from compose environment
+        let env_args = build_container_env_args(session, deploy_path, env, project, compose_arg, svc)?;
+
+        // 4. Start new container
+        o_step!("\n{}", format!("🚀 Starting {}", new_name).cyan());
+        let volumes = format!("{}/public:/app/public", deploy_path);
+        let run_cmd = format!(
+            "docker run -d --name {} --network {} {} -v {} {}",
+            new_name, network, env_args, volumes, image
+        );
+        session.exec(&run_cmd, None)?;
+
+        // 5. Resolve IP
+        let ip = resolve_container_ip(session, &new_name)?;
+        o_detail!("   {} → {}:{}", new_name.cyan(), ip, port);
+
+        // 6. Health check
+        o_step!("\n{}", "💚 Health check...".cyan());
+        let health_cmd = format!(
+            "for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf http://{}:{}/status > /dev/null && echo 'OK' && exit 0; sleep 2; done; echo 'FAIL'; exit 1",
+            ip, port
+        );
+        if let Err(_) = session.exec(&health_cmd, None) {
+            o_warn!("   {} Health check failed, rolling back", "✘".red());
+            session.exec(&format!("docker rm -f {}", new_name), None)?;
+            return Err(anyhow::anyhow!("Health check failed for {}", new_name));
+        }
+        o_success!("   {} Healthy", "✔".green());
+
+        // 7. Switch Caddy routes
+        o_step!("\n{}", "⚙️  Switching routes...".cyan());
+        upload_caddy_routes_for_app(session, config, app, &ip, port)?;
+
+        // 8. Stop old container
+        let old_id = session.exec_output(&format!("cat {} 2>/dev/null", active_file))
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .unwrap_or_default();
+
+        if !old_id.is_empty() && old_id != deployment_id.to_string() {
+            let old_name = format!("{}-{}-{}", project, svc, old_id);
+            o_step!("{}", format!("🛑 Stopping old {}", old_name).cyan());
+            let _ = session.exec(&format!("docker rm -f {}", old_name), None);
+        }
+
+        // Also clean up any legacy blue-green containers
+        let _ = session.exec(&format!("rm -f {}/.ops-slot", deploy_path), None);
+    }
+
+    // 9. Write active deployment
+    session.exec(&format!("echo {} > {}", deployment_id, active_file), None)?;
+    o_detail!("   Active deployment: {}", deployment_id.to_string().green());
+
+    // 10. Prune
+    session.exec("docker image prune -f", None)?;
+
+    Ok(())
+}
+
+fn detect_network(session: &SshSession, project: &str) -> Result<String> {
+    // Try common network names
+    let candidates = [
+        format!("{}-net", project),
+        format!("{}_default", project),
+        "judge-net".to_string(),
+    ];
+    for net in &candidates {
+        let check = session.exec_output(&format!("docker network inspect {} 2>/dev/null && echo OK", net));
+        if let Ok(out) = check {
+            if String::from_utf8_lossy(&out).contains("OK") {
+                return Ok(net.clone());
+            }
+        }
+    }
+    // Fallback: look for any network containing project name
+    let out = session.exec_output(&format!(
+        "docker network ls --format '{{{{.Name}}}}' | grep -i {} | head -1",
+        project
+    )).unwrap_or_default();
+    let net = String::from_utf8_lossy(&out).trim().to_string();
+    if net.is_empty() {
+        Err(anyhow::anyhow!("No Docker network found for project {}", project))
+    } else {
+        Ok(net)
+    }
+}
+
+fn resolve_container_ip(session: &SshSession, container_name: &str) -> Result<String> {
+    let cmd = format!(
+        "docker inspect -f '{{{{range .NetworkSettings.Networks}}}}{{{{.IPAddress}}}}{{{{end}}}}' {}",
+        container_name
+    );
+    let out = session.exec_output(&cmd)?;
+    let ip = String::from_utf8_lossy(&out).trim().to_string();
+    if ip.is_empty() {
+        Err(anyhow::anyhow!("Failed to resolve IP for {}", container_name))
+    } else {
+        Ok(ip)
+    }
+}
+
+fn build_container_env_args(session: &SshSession, deploy_path: &str, env: &str, project: &str, compose_arg: &str, svc: &str) -> Result<String> {
+    // Extract environment variables from compose config
+    let cmd = format!(
+        "cd {} && {}docker compose -p {} {} config --format json 2>/dev/null | python3 -c \"import sys,json; svc=json.load(sys.stdin)['services'].get('{}',{{}}); [print(f'-e {{k}}={{v}}') for k,v in svc.get('environment',{{}}).items()]\" 2>/dev/null || echo ''",
+        deploy_path, env, project, compose_arg.trim(), svc
+    );
+    let out = session.exec_output(&cmd).unwrap_or_default();
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+fn upload_caddy_routes_for_app(session: &SshSession, config: &OpsToml, app: &AppDef, ip: &str, port: u16) -> Result<()> {
+    let project = &config.project;
+    let target = format!("{}.{}", app.name, project);
+    let conf_name = format!("ops-{}-{}", app.name, project);
+
+    let mut caddy_content = String::new();
+
+    // App target route
+    let matcher = conf_name.replace('-', "_");
+    caddy_content.push_str(&format!(
+        "# {}\n@{} header X-OPS-Target {}\nhandle @{} {{\n    reverse_proxy {}:{}\n}}\n",
+        target, matcher, target, matcher, ip, port
+    ));
+
+    // Domain routes
+    for route in &config.routes {
+        let domain = &route.domain;
+        let route_matcher = domain.replace('.', "_").replace('-', "_");
+        caddy_content.push_str(&format!(
+            "\n# {}\n@{} host {}\nhandle @{} {{\n    reverse_proxy {}:{}\n}}\n",
+            domain, route_matcher, domain, route_matcher, ip, port
+        ));
+        o_detail!("   ✔ {} → {}:{}", domain.cyan(), ip, port);
+    }
+
+    // Write and reload
+    let caddy_path = format!("/etc/caddy/routes.d/{}.caddy", conf_name);
+    session.exec(
+        &format!("mkdir -p /etc/caddy/routes.d && cat > {}", caddy_path),
+        Some(&caddy_content),
+    )?;
+
+    let validate = session.exec("caddy validate --config /etc/caddy/Caddyfile", None);
+    if validate.is_ok() {
+        session.exec("systemctl reload caddy", None)?;
+        o_success!("   ✔ Caddy reloaded");
+    } else {
+        o_warn!("   {} Caddy validation failed", "⚠".yellow());
+    }
 
     Ok(())
 }
@@ -567,7 +810,7 @@ fn sync_code(
         }
         "push" => {
             o_step!("\n{}", "📤 Syncing code (rsync)...".cyan());
-            session.rsync_push(&deploy_path)?;
+            session.rsync_push(&deploy_path, &config.deploy.include)?;
             o_success!("   {}", "✔ Code synced.".green());
         }
         "image" => {
@@ -613,6 +856,8 @@ fn sync_env_files(config: &OpsToml, session: &SshSession) -> Result<()> {
             }
             let content = fs::read_to_string(&ef.local)?;
             let remote_path = format!("{}/{}", deploy_path, ef.remote);
+            // Ensure parent directory exists
+            session.exec(&format!("mkdir -p $(dirname {})", remote_path), None)?;
             session.exec(
                 &format!("cat > {}", remote_path),
                 Some(&content),
@@ -640,6 +885,8 @@ async fn sync_directories(config: &OpsToml, session: &SshSession) -> Result<()> 
             }
             let remote = format!("{}:{}/{}", target, deploy_path, s.remote);
             o_detail!("   {} → {}", s.local.cyan(), remote);
+            // Ensure parent directory exists on remote
+            session.exec(&format!("mkdir -p {}/{}", deploy_path, s.remote), None)?;
             scp::handle_push(s.local.clone(), remote).await?;
         }
     }
@@ -706,13 +953,16 @@ fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Opti
         routes_written = true;
     }
 
-    // Handle [[apps]] with port
+    // Handle [[apps]] with port (skip if [[routes]] already covered them)
+    let route_ports: std::collections::HashSet<u16> = config.routes.iter().map(|r| r.port).collect();
     let apps_to_process: Vec<_> = if let Some(ref filter) = app_filter {
         config.apps.iter().filter(|a| a.name == *filter).collect()
     } else {
         config.apps.iter().collect()
     };
-    let apps_with_port: Vec<_> = apps_to_process.iter().filter(|a| a.port.is_some()).collect();
+    let apps_with_port: Vec<_> = apps_to_process.iter()
+        .filter(|a| a.port.is_some() && !route_ports.contains(&a.port.unwrap()))
+        .collect();
 
     if !apps_with_port.is_empty() {
         if !routes_written {
@@ -852,6 +1102,7 @@ fn build_and_start(
     app_filter: &Option<String>,
     restart_only: bool,
     env_vars: &[String],
+    no_pull: bool,
 ) -> Result<()> {
     let deploy_path = &config.deploy_path;
 
@@ -879,11 +1130,339 @@ fn build_and_start(
         session.exec("docker image prune -f", None).ok();
     } else {
         // 旧行为: build + up
+        let pull_arg = if no_pull { "" } else { " --pull" };
         let cmd = format!(
-            "cd {} && {}docker compose{} build{} && {}docker compose{} up -d --remove-orphans{}",
-            deploy_path, env, compose_arg, svc_arg, env, compose_arg, svc_arg
+            "cd {} && {}docker compose{} build{}{} && {}docker compose{} up -d --remove-orphans{}",
+            deploy_path, env, compose_arg, pull_arg, svc_arg, env, compose_arg, svc_arg
         );
         session.exec(&cmd, None)?;
+    }
+
+    Ok(())
+}
+
+// ===== Blue-Green Zero-Downtime Deploy =====
+
+/// 获取 app services 列表（[[apps]] 中定义的 services）
+fn collect_app_services(config: &OpsToml) -> Vec<String> {
+    let mut svcs = Vec::new();
+    for app in &config.apps {
+        for s in &app.services {
+            if !svcs.contains(s) {
+                svcs.push(s.clone());
+            }
+        }
+    }
+    svcs
+}
+
+/// 获取基础设施 services（compose 中定义但不在 [[apps]] 中的 services）
+fn collect_infra_services(config: &OpsToml, session: &SshSession, env_vars: &[String]) -> Result<Vec<String>> {
+    let deploy_path = &config.deploy_path;
+    let compose = compose_file_args(config);
+    let env = env_prefix(env_vars);
+    let compose_arg = if compose.is_empty() { String::new() } else { format!(" {}", compose) };
+
+    let cmd = format!(
+        "cd {} && {}docker compose{} config --services 2>/dev/null",
+        deploy_path, env, compose_arg
+    );
+    let output = session.exec_output(&cmd).unwrap_or_default();
+    let all_services: Vec<String> = String::from_utf8_lossy(&output)
+        .trim()
+        .lines()
+        .map(|s| s.to_string())
+        .collect();
+
+    let app_svcs = collect_app_services(config);
+    Ok(all_services.into_iter().filter(|s| !app_svcs.contains(s)).collect())
+}
+
+/// Blue-green 零停机部署
+fn blue_green_deploy(
+    config: &OpsToml,
+    session: &SshSession,
+    service_filter: &Option<String>,
+    app_filter: &Option<String>,
+    env_vars: &[String],
+    no_pull: bool,
+    init: bool,
+) -> Result<()> {
+    let deploy_path = &config.deploy_path;
+    let compose = compose_file_args(config);
+    let env = env_prefix(env_vars);
+    let compose_arg = if compose.is_empty() { String::new() } else { format!(" {}", compose) };
+    let project = &config.project;
+
+    // 1. 读取当前 slot
+    let slot_file = format!("{}/.ops-slot", deploy_path);
+    let active_slot = session.exec_output(&format!("cat {} 2>/dev/null || echo blue", slot_file))
+        .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+        .unwrap_or_else(|_| "blue".to_string());
+    let target_slot = if active_slot == "blue" { "green" } else { "blue" };
+
+    o_step!("\n{}", format!("🔄 Blue-Green Deploy: {} → {}", active_slot, target_slot).cyan());
+
+    // 2. 确保基础设施在主 project 中运行
+    let infra_svcs = collect_infra_services(config, session, env_vars)?;
+    if !infra_svcs.is_empty() {
+        let infra_list = infra_svcs.join(" ");
+        o_detail!("   Ensuring infra: {}", infra_list.dimmed());
+        let cmd = format!(
+            "cd {} && {}docker compose -p {} {} up -d --no-deps {}",
+            deploy_path, env, project, compose_arg.trim(), infra_list
+        );
+        session.exec(&cmd, None)?;
+    }
+
+    // 3. 确定要部署的 app services
+    let app_svcs = if let Some(ref filter) = service_filter {
+        vec![filter.clone()]
+    } else if let Some(ref app_name) = app_filter {
+        config.apps.iter()
+            .find(|a| a.name == *app_name)
+            .map(|a| a.services.clone())
+            .unwrap_or_else(|| collect_app_services(config))
+    } else {
+        collect_app_services(config)
+    };
+    let svc_list = app_svcs.join(" ");
+
+    // 4. 构建新镜像 (在主 project 下构建，镜像名可复用)
+    o_step!("\n{}", "🔨 Building images...".cyan());
+    let pull_arg = if no_pull { "" } else { " --pull" };
+    let build_cmd = format!(
+        "cd {} && {}docker compose -p {} {}{} build --no-cache{} {}",
+        deploy_path, env, project, compose_arg.trim(),
+        if compose_arg.is_empty() { "" } else { " " },
+        pull_arg, svc_list
+    );
+    session.exec(&build_cmd, None)?;
+
+    // 5. 启动 target slot (不同 project name，共享 juglans-net 网络)
+    let target_project = format!("{}-{}", project, target_slot);
+    o_step!("\n{}", format!("🚀 Starting {} slot...", target_slot).cyan());
+    let up_cmd = format!(
+        "cd {} && {}docker compose -p {} {} up -d --no-deps {}",
+        deploy_path, env, target_project, compose_arg.trim(), svc_list
+    );
+    session.exec(&up_cmd, None)?;
+
+    // 6. Init commands (迁移等) — 在 target slot 的容器里运行
+    if init {
+        o_step!("\n{}", "🔧 Running init commands on new slot...".cyan());
+        for step in &config.init {
+            // 只运行属于本次部署 services 的 init
+            if app_svcs.contains(&step.service) {
+                for command in step.all_commands() {
+                    o_detail!("   {} → {}", step.service.yellow(), command);
+                    let cmd = format!(
+                        "cd {} && {}docker compose -p {} {} exec {} {}",
+                        deploy_path, env, target_project, compose_arg.trim(), step.service, command
+                    );
+                    session.exec(&cmd, None)?;
+                }
+                o_success!("   ✔ {}", step.service.green());
+            }
+        }
+    }
+
+    // 7. 获取 target slot 容器 IP
+    o_step!("\n{}", "🔍 Resolving container IPs...".cyan());
+    let mut ip_map: std::collections::HashMap<String, (String, u16)> = std::collections::HashMap::new();
+
+    for app in &config.apps {
+        if let Some(port) = app.port {
+            for svc in &app.services {
+                if !app_svcs.contains(svc) { continue; }
+                let container_name = format!("{}-{}-1", target_project, svc);
+                let inspect_cmd = format!(
+                    "docker inspect -f '{{{{range .NetworkSettings.Networks}}}}{{{{.IPAddress}}}}{{{{end}}}}' {}",
+                    container_name
+                );
+                let ip = session.exec_output(&inspect_cmd)
+                    .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+                    .unwrap_or_default();
+
+                if ip.is_empty() {
+                    o_warn!("   {} Could not resolve IP for {}", "⚠".yellow(), container_name);
+                    continue;
+                }
+                o_detail!("   {} → {}:{}", svc.cyan(), ip, port);
+                ip_map.insert(app.name.clone(), (ip, port));
+            }
+        }
+    }
+
+    if ip_map.is_empty() {
+        return Err(anyhow!("No container IPs resolved — aborting blue-green switch"));
+    }
+
+    // 8. 健康检查 (对新容器 IP)
+    o_step!("\n{}", "💚 Health checks on new slot...".cyan());
+    let mut all_healthy = true;
+    for hc in &config.healthchecks {
+        // 查找对应的 app → IP
+        if let Some((ip, port)) = config.apps.iter()
+            .find(|a| a.name == hc.name)
+            .and_then(|a| ip_map.get(&a.name))
+        {
+            let health_url = format!("http://{}:{}", ip, port);
+            // 用 health_url 替换原 URL 的 host:port 部分
+            let path = hc.url.splitn(4, '/').skip(3).next().unwrap_or("");
+            let check_url = if path.is_empty() {
+                health_url
+            } else {
+                format!("{}/{}", health_url, path)
+            };
+            let cmd = format!(
+                "for i in 1 2 3 4 5 6 7 8 9 10; do curl -sf {} > /dev/null && echo 'OK' && exit 0; sleep 2; done; echo 'FAIL'; exit 1",
+                check_url
+            );
+            let output = session.exec_output(&cmd);
+            match output {
+                Ok(o) if String::from_utf8_lossy(&o).trim() == "OK" => {
+                    o_success!("   ✔ {}  {}  {}", hc.name.green(), check_url, "OK".green());
+                }
+                _ => {
+                    o_warn!("   ✘ {}  {}  {}", hc.name.red(), check_url, "FAILED".red());
+                    all_healthy = false;
+                }
+            }
+        }
+    }
+
+    if !all_healthy {
+        // 健康检查失败 — 停掉 target slot，不切流量
+        o_warn!("\n{}", "⚠ Health checks failed — rolling back (stopping new slot)".yellow());
+        let down_cmd = format!(
+            "cd {} && docker compose -p {} down 2>/dev/null; true",
+            deploy_path, target_project
+        );
+        session.exec(&down_cmd, None)?;
+        return Err(anyhow!("Blue-green deploy aborted: health checks failed on new slot"));
+    }
+
+    // 9. 更新 Caddy 路由 → 指向新容器 IP
+    o_step!("\n{}", "⚙️  Switching Caddy routes to new slot...".cyan());
+    upload_caddy_routes_bg(config, session, &ip_map)?;
+
+    // 10. 写入新的 active slot
+    session.exec(&format!("echo {} > {}", target_slot, slot_file), None)?;
+    o_detail!("   Active slot: {}", target_slot.green());
+
+    // 11. 停掉旧 slot
+    let old_project = format!("{}-{}", project, active_slot);
+    // 检查旧 slot 是否存在（首次部署可能没有旧 slot）
+    let old_exists = session.exec_output(&format!(
+        "docker compose -p {} ps -q 2>/dev/null | head -1",
+        old_project
+    )).map(|o| !String::from_utf8_lossy(&o).trim().is_empty()).unwrap_or(false);
+
+    if old_exists {
+        o_step!("\n{}", format!("🛑 Stopping old {} slot...", active_slot).cyan());
+        let down_cmd = format!(
+            "cd {} && docker compose -p {} {} down --remove-orphans 2>/dev/null; true",
+            deploy_path, old_project, compose_arg.trim()
+        );
+        session.exec(&down_cmd, None)?;
+        o_success!("   ✔ {} slot stopped", active_slot);
+    }
+
+    // 清理旧镜像
+    session.exec("docker image prune -f 2>/dev/null", None).ok();
+
+    o_result!("\n{} Blue-green deploy complete: {} → {}", "✅".green(), active_slot, target_slot.green());
+    Ok(())
+}
+
+/// 生成 Caddy 路由指向容器 IP（蓝绿模式专用）
+fn upload_caddy_routes_bg(
+    config: &OpsToml,
+    session: &SshSession,
+    ip_map: &std::collections::HashMap<String, (String, u16)>,
+) -> Result<()> {
+    session.exec("mkdir -p /etc/caddy/routes.d", None)?;
+
+    let project_name = &config.project;
+
+    // [[routes]] — domain-based routing to container IPs
+    if !config.routes.is_empty() {
+        for route in &config.routes {
+            // 找到此路由对应的 app (通过 port 匹配)
+            let upstream = config.apps.iter()
+                .find(|a| a.port == Some(route.port))
+                .and_then(|a| ip_map.get(&a.name))
+                .map(|(ip, port)| format!("{}:{}", ip, port))
+                .unwrap_or_else(|| format!("127.0.0.1:{}", route.port));
+
+            let safe_domain = route.domain.replace('.', "_").replace('-', "_");
+            let matcher_name = format!("ops_route_{}", safe_domain);
+            let caddy_snippet = format!(
+                "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    reverse_proxy {upstream}\n}}\n",
+                domain = route.domain,
+                matcher = matcher_name,
+                upstream = upstream,
+            );
+            let conf_name = format!("ops-route-{}.caddy", safe_domain);
+            session.exec(
+                &format!("cat > /etc/caddy/routes.d/{}", conf_name),
+                Some(&caddy_snippet),
+            )?;
+            o_detail!("   ✔ {} → {}", route.domain.green(), upstream);
+        }
+    }
+
+    // [[apps]] with port — X-OPS-Target routing to container IPs
+    for app in &config.apps {
+        if app.port.is_none() { continue; }
+        if let Some((ip, port)) = ip_map.get(&app.name) {
+            let target = format!("{}.{}", app.name, project_name);
+            let matcher_name = format!("ops_{}_{}", app.name, project_name).replace('-', "_");
+            let caddy_snippet = format!(
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy {ip}:{port}\n}}\n",
+                target = target,
+                matcher = matcher_name,
+                ip = ip,
+                port = port,
+            );
+            let conf_name = format!("ops-{}-{}.caddy", app.name, project_name);
+            session.exec(
+                &format!("cat > /etc/caddy/routes.d/{}", conf_name),
+                Some(&caddy_snippet),
+            )?;
+        }
+    }
+
+    // Validate & reload Caddy
+    session.exec("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy", None)?;
+    o_success!("   ✔ Caddy reloaded");
+
+    Ok(())
+}
+
+fn run_init_commands(config: &OpsToml, session: &SshSession, env_vars: &[String]) -> Result<()> {
+    if config.init.is_empty() {
+        return Ok(());
+    }
+
+    let deploy_path = &config.deploy_path;
+    let compose = compose_file_args(config);
+    let env = env_prefix(env_vars);
+    let compose_arg = if compose.is_empty() { String::new() } else { format!(" {}", compose) };
+
+    o_step!("\n{}", "🔧 Running init commands...".cyan());
+
+    for step in &config.init {
+        for command in step.all_commands() {
+            o_detail!("   {} → {}", step.service.yellow(), command);
+            let cmd = format!(
+                "cd {} && {}docker compose{} exec {} {}",
+                deploy_path, env, compose_arg, step.service, command
+            );
+            session.exec(&cmd, None)?;
+        }
+        o_success!("   ✔ {}", step.service.green());
     }
 
     Ok(())

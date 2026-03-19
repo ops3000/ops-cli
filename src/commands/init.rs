@@ -125,6 +125,62 @@ fn cleanup_old_residue() -> Result<bool> {
 }
 
 
+/// Check and install Docker + Caddy if not present
+fn ensure_system_deps() -> Result<()> {
+    if std::env::var("USER").unwrap_or_default() != "root" {
+        o_warn!("{}", "Not root — skipping dependency checks.".yellow());
+        return Ok(());
+    }
+
+    // Docker
+    let has_docker = Command::new("which").arg("docker")
+        .output().map(|o| o.status.success()).unwrap_or(false);
+
+    if has_docker {
+        o_success!("{}", "✔ Docker installed".green());
+    } else {
+        o_step!("Installing Docker...");
+        let status = Command::new("sh")
+            .args(["-c", "curl -fsSL https://get.docker.com | sh"])
+            .status()
+            .context("Failed to install Docker")?;
+        if !status.success() {
+            return Err(anyhow::anyhow!("Docker installation failed"));
+        }
+        Command::new("systemctl").args(["enable", "--now", "docker"]).status().ok();
+        o_success!("{}", "✔ Docker installed".green());
+    }
+
+    // Caddy
+    let has_caddy = Command::new("which").arg("caddy")
+        .output().map(|o| o.status.success()).unwrap_or(false);
+
+    if has_caddy {
+        o_success!("{}", "✔ Caddy installed".green());
+    } else {
+        o_step!("Installing Caddy...");
+        let install_script = concat!(
+            "apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl && ",
+            "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg && ",
+            "curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list && ",
+            "apt-get update && ",
+            "apt-get install -y caddy"
+        );
+        let status = Command::new("sh")
+            .args(["-c", install_script])
+            .status()
+            .context("Failed to install Caddy")?;
+        if !status.success() {
+            o_warn!("{}", "Caddy installation failed — continuing without it.".yellow());
+        } else {
+            Command::new("systemctl").args(["enable", "--now", "caddy"]).status().ok();
+            o_success!("{}", "✔ Caddy installed".green());
+        }
+    }
+
+    Ok(())
+}
+
 /// Configure and start ops serve as a systemd service
 fn configure_serve_daemon(
     token: &str,
@@ -443,6 +499,11 @@ pub async fn handle_init(
         Some(r) => o_detail!("  Region:   {}", r.cyan()),
         None => o_detail!("  Region:   {}", "(not set, use --region to configure)".dimmed()),
     }
+
+    // 5.5 Check and install system dependencies
+    o_step!();
+    o_step!("{}", "Checking system dependencies...".cyan());
+    ensure_system_deps()?;
 
     // 6. Add CI public key to authorized_keys
     o_step!();

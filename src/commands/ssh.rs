@@ -136,29 +136,83 @@ impl SshSession {
     }
 
     /// rsync 本地目录到远程，复用已有的 key
-    pub fn rsync_push(&self, remote_path: &str) -> Result<()> {
+    /// `include` 为白名单：非空时只同步列出的路径，其余排除
+    /// 支持 `..` 开头的路径（项目目录外的依赖），会单独 rsync 到远程对应子目录
+    pub fn rsync_push(&self, remote_path: &str, include: &[String]) -> Result<()> {
         let ssh_cmd = format!(
             "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
             self.key_path
         );
         let remote = format!("{}:{}/", self.ssh_target, remote_path);
 
-        let status = Command::new("rsync")
-            .arg("-az")
-            .arg("--delete")
-            .arg("-e").arg(&ssh_cmd)
-            .arg("--exclude").arg("target/")
-            .arg("--exclude").arg("node_modules/")
-            .arg("--exclude").arg(".git/")
-            .arg("--exclude").arg(".env")
-            .arg("./")
-            .arg(&remote)
-            .status()
-            .context("Failed to execute rsync (is rsync installed?)")?;
+        // Separate entries: parent-relative (../) vs local
+        let (external, local): (Vec<_>, Vec<_>) = include.iter()
+            .partition(|e| e.starts_with("../"));
 
-        if !status.success() {
-            return Err(anyhow::anyhow!("rsync failed with status: {}", status));
+        // 1. Sync local entries with include/exclude filters
+        {
+            let mut cmd = Command::new("rsync");
+            cmd.arg("-az")
+                .arg("--progress")
+                .arg("--delete")
+                .arg("-e").arg(&ssh_cmd)
+                .arg("--exclude").arg("target/")
+                .arg("--exclude").arg("node_modules/")
+                .arg("--exclude").arg(".git/")
+                .arg("--exclude").arg(".env");
+
+            if !local.is_empty() {
+                for entry in &local {
+                    let pattern = if entry.contains('.') && !entry.ends_with('/') {
+                        format!("/{}", entry)
+                    } else {
+                        let trimmed = entry.trim_end_matches('/');
+                        format!("/{}/***", trimmed)
+                    };
+                    cmd.arg("--include").arg(pattern);
+                }
+                cmd.arg("--exclude").arg("*");
+            }
+
+            cmd.arg("./").arg(&remote);
+
+            let status = cmd.status()
+                .context("Failed to execute rsync (is rsync installed?)")?;
+            if !status.success() {
+                return Err(anyhow::anyhow!("rsync failed with status: {}", status));
+            }
         }
+
+        // 2. Sync external (../) entries individually
+        for entry in &external {
+            // e.g. "../juglans/jug0" → local source: "../juglans/jug0/", remote dest: "<remote_path>/jug0/"
+            let dir_name = std::path::Path::new(entry.as_str())
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.trim_end_matches('/').to_string());
+
+            let src = format!("{}/", entry.trim_end_matches('/'));
+            let dst = format!("{}:{}/{}/", self.ssh_target, remote_path, dir_name);
+
+            let mut cmd = Command::new("rsync");
+            cmd.arg("-az")
+                .arg("--progress")
+                .arg("--delete")
+                .arg("-e").arg(&ssh_cmd)
+                .arg("--exclude").arg("target/")
+                .arg("--exclude").arg("node_modules/")
+                .arg("--exclude").arg(".git/")
+                .arg("--exclude").arg(".env")
+                .arg(&src)
+                .arg(&dst);
+
+            let status = cmd.status()
+                .context(format!("Failed to rsync external path: {}", entry))?;
+            if !status.success() {
+                return Err(anyhow::anyhow!("rsync failed for '{}' with status: {}", entry, status));
+            }
+        }
+
         Ok(())
     }
 

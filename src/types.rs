@@ -93,6 +93,8 @@ pub struct OpsToml {
     pub routes: Vec<RouteDef>,
     #[serde(default)]
     pub healthchecks: Vec<HealthCheck>,
+    #[serde(default)]
+    pub init: Vec<InitStep>,
     pub build: Option<BuildConfig>,
 }
 
@@ -141,6 +143,9 @@ pub struct BuildImageConfig {
 pub struct DeployConfig {
     #[serde(default = "default_source")]
     pub source: String,
+    // strategy removed — all deploys use deploy-id based zero-downtime
+    #[serde(default)]
+    pub strategy: Option<String>,  // ignored, kept for backward compat
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
@@ -149,6 +154,8 @@ pub struct DeployConfig {
     pub compose_files: Option<Vec<String>>,
     #[serde(default)]
     pub registry: Option<RegistryConfig>,
+    #[serde(default)]
+    pub include: Vec<String>,
 }
 
 
@@ -208,6 +215,26 @@ pub struct RouteDef {
 pub struct HealthCheck {
     pub name: String,
     pub url: String,
+}
+
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct InitStep {
+    pub service: String,
+    pub command: Option<String>,
+    pub commands: Option<Vec<String>>,
+}
+
+impl InitStep {
+    pub fn all_commands(&self) -> Vec<&str> {
+        if let Some(cmds) = &self.commands {
+            cmds.iter().map(|s| s.as_str()).collect()
+        } else if let Some(cmd) = &self.command {
+            vec![cmd.as_str()]
+        } else {
+            vec![]
+        }
+    }
 }
 
 

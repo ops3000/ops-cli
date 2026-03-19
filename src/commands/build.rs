@@ -190,7 +190,7 @@ async fn sync_code(build: &BuildConfig, session: &SshSession, node: &str, git_re
         }
         "push" => {
             o_step!("\n{}", "📤 Syncing code (rsync)...".cyan());
-            session.rsync_push(&build.path)?;
+            session.rsync_push(&build.path, &[])?;
             o_success!("   {}", "✔ Code synced".green());
         }
         other => return Err(anyhow::anyhow!("Unknown build source: {}", other)),

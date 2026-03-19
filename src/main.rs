@@ -181,6 +181,12 @@ enum Commands {
         /// Force clean deploy: remove existing containers before starting
         #[arg(long)]
         force: bool,
+        /// Skip pulling latest base images during build
+        #[arg(long)]
+        no_pull: bool,
+        /// Run init commands (migrations) after deploy
+        #[arg(long)]
+        init: bool,
     },
 
     /// Remote build on a persistent build node (like Depot.dev)
@@ -523,8 +529,8 @@ async fn main() -> Result<()> {
         
         Commands::Launch { output, yes } =>
             commands::launch::handle_launch(output.clone(), interactive && !*yes).await,
-        Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling, force } =>
-            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling, *force, interactive).await,
+        Commands::Deploy { file, service, app, restart_only, env_vars, node, region, rolling, force, no_pull, init } =>
+            commands::deploy::handle_deploy(file.clone(), service.clone(), app.clone(), *restart_only, env_vars.clone(), *node, region.clone(), *rolling, *force, *no_pull, *init, interactive).await,
         Commands::Build { file, git_ref, service, tag, no_push, jobs } =>
             commands::build::handle_build(file.clone(), git_ref.clone(), service.clone(), tag.clone(), *no_push, *jobs).await,
         Commands::Status { file } =>
