@@ -568,8 +568,15 @@ fn deploy_app_zero_downtime(
         // 2. Detect network
         let network = detect_network(session, project)?;
 
-        // 3. Build env file from compose environment
-        let env_file = build_container_env_file(session, deploy_path, env, project, compose_arg, svc)?;
+        // 3. Generate env file from compose config
+        let env_file = format!("{}/.ops-env-{}", deploy_path, svc);
+        let gen_env_cmd = format!(
+            "cd {} && docker compose config --format json 2>/dev/null | python3 -c \"import sys,json; svc=json.load(sys.stdin)['services'].get('{}',{{}}); [print(f'{{{{k}}}}={{{{v}}}}') for k,v in svc.get('environment',{{}}).items()]\" > {} 2>/dev/null; cat {}",
+            deploy_path, svc, env_file, env_file
+        );
+        let env_out = session.exec_output(&gen_env_cmd).unwrap_or_default();
+        let env_content = String::from_utf8_lossy(&env_out).trim().to_string();
+        o_debug!("   env: {} lines", env_content.lines().count());
 
         // 4. Start new container
         o_step!("\n{}", format!("🚀 Starting {}", new_name).cyan());
