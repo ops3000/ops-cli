@@ -568,15 +568,15 @@ fn deploy_app_zero_downtime(
         // 2. Detect network
         let network = detect_network(session, project)?;
 
-        // 3. Build env args from compose environment
-        let env_args = build_container_env_args(session, deploy_path, env, project, compose_arg, svc)?;
+        // 3. Build env file from compose environment
+        let env_file = build_container_env_file(session, deploy_path, env, project, compose_arg, svc)?;
 
         // 4. Start new container
         o_step!("\n{}", format!("🚀 Starting {}", new_name).cyan());
         let volumes = format!("{}/public:/app/public", deploy_path);
         let run_cmd = format!(
-            "docker run -d --name {} --network {} {} -v {} {}",
-            new_name, network, env_args, volumes, image
+            "docker run -d --name {} --network {} --env-file {} -v {} {}",
+            new_name, network, env_file, volumes, image
         );
         session.exec(&run_cmd, None)?;
 
@@ -668,14 +668,15 @@ fn resolve_container_ip(session: &SshSession, container_name: &str) -> Result<St
     }
 }
 
-fn build_container_env_args(session: &SshSession, deploy_path: &str, env: &str, project: &str, compose_arg: &str, svc: &str) -> Result<String> {
-    // Extract environment variables from compose config
+fn build_container_env_file(session: &SshSession, deploy_path: &str, env: &str, project: &str, compose_arg: &str, svc: &str) -> Result<String> {
+    // Extract environment variables from compose config into a temp env file
+    let env_file = format!("{}/.ops-env-{}", deploy_path, svc);
     let cmd = format!(
-        "cd {} && {}docker compose -p {} {} config --format json 2>/dev/null | python3 -c \"import sys,json; svc=json.load(sys.stdin)['services'].get('{}',{{}}); [print(f'-e {{k}}={{v}}') for k,v in svc.get('environment',{{}}).items()]\" 2>/dev/null || echo ''",
-        deploy_path, env, project, compose_arg.trim(), svc
+        "cd {} && {}docker compose -p {} {} config --format json 2>/dev/null | python3 -c \"import sys,json; svc=json.load(sys.stdin)['services'].get('{}',{{}}); [print(f'{{k}}={{v}}') for k,v in svc.get('environment',{{}}).items()]\" > {} 2>/dev/null || touch {}",
+        deploy_path, env, project, compose_arg.trim(), svc, env_file, env_file
     );
-    let out = session.exec_output(&cmd).unwrap_or_default();
-    Ok(String::from_utf8_lossy(&out).trim().to_string())
+    session.exec(&cmd, None)?;
+    Ok(env_file)
 }
 
 fn upload_caddy_routes_for_app(session: &SshSession, config: &OpsToml, app: &AppDef, ip: &str, port: u16) -> Result<()> {
