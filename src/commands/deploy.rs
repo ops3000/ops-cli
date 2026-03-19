@@ -566,7 +566,7 @@ fn deploy_app_zero_downtime(
         let new_name = format!("{}-{}-{}", project, svc, deployment_id);
 
         // 2. Detect network
-        let network = detect_network(session, project)?;
+        let network = detect_network(session, deploy_path, project)?;
 
         // 3. Generate env file from compose config
         let env_file = format!("{}/.ops-env-{}", deploy_path, svc);
@@ -647,12 +647,41 @@ fn deploy_app_zero_downtime(
     Ok(())
 }
 
-fn detect_network(session: &SshSession, project: &str) -> Result<String> {
-    // Try common network names
+fn detect_network(session: &SshSession, deploy_path: &str, project: &str) -> Result<String> {
+    // 1. Ask docker compose for the actual network name
+    let compose_net = session.exec_output(&format!(
+        "cd {} && docker compose config --format json 2>/dev/null | python3 -c \"import sys,json; nets=json.load(sys.stdin).get('networks',{{}}); print(next(iter(nets.values()),{{}}).get('name',''))\" 2>/dev/null",
+        deploy_path
+    ));
+    if let Ok(out) = &compose_net {
+        let net = String::from_utf8_lossy(out).trim().to_string();
+        if !net.is_empty() {
+            // Verify it exists
+            let check = session.exec_output(&format!("docker network inspect {} 2>/dev/null && echo OK", net));
+            if let Ok(o) = check {
+                if String::from_utf8_lossy(&o).contains("OK") {
+                    return Ok(net);
+                }
+            }
+        }
+    }
+
+    // 2. Query running containers for their network
+    let container_net = session.exec_output(&format!(
+        "docker inspect --format '{{{{range $k,$v := .NetworkSettings.Networks}}}}{{{{$k}}}}{{{{end}}}}' $(docker ps -q --filter name={} 2>/dev/null | head -1) 2>/dev/null",
+        project
+    ));
+    if let Ok(out) = &container_net {
+        let net = String::from_utf8_lossy(out).trim().to_string();
+        if !net.is_empty() && net != "bridge" && net != "host" && net != "none" {
+            return Ok(net);
+        }
+    }
+
+    // 3. Try common naming conventions
     let candidates = [
         format!("{}-net", project),
         format!("{}_default", project),
-        "judge-net".to_string(),
     ];
     for net in &candidates {
         let check = session.exec_output(&format!("docker network inspect {} 2>/dev/null && echo OK", net));
@@ -662,7 +691,8 @@ fn detect_network(session: &SshSession, project: &str) -> Result<String> {
             }
         }
     }
-    // Fallback: look for any network containing project name
+
+    // 4. Fallback: grep for any network containing project name
     let out = session.exec_output(&format!(
         "docker network ls --format '{{{{.Name}}}}' | grep -i {} | head -1",
         project
