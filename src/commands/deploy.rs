@@ -622,15 +622,21 @@ fn deploy_app_zero_downtime(
         o_step!("\n{}", "⚙️  Switching routes...".cyan());
         upload_caddy_routes_for_app(session, config, app, &ip, port)?;
 
-        // 8. Stop old container
-        let old_id = session.exec_output(&format!("cat {} 2>/dev/null", active_file))
+        // 8. Stop ALL old containers for this service (not just the previous one)
+        let current_name = format!("{}-{}-{}", project, svc, deployment_id);
+        let cleanup_cmd = format!(
+            "docker ps -a --filter 'name={}-{}-' --format '{{{{.Names}}}}' | grep -v '{}' | xargs -r docker rm -f 2>/dev/null; true",
+            project, svc, current_name
+        );
+        let removed = session.exec_output(&cleanup_cmd)
             .map(|o| String::from_utf8_lossy(&o).trim().to_string())
             .unwrap_or_default();
-
-        if !old_id.is_empty() && old_id != deployment_id.to_string() {
-            let old_name = format!("{}-{}-{}", project, svc, old_id);
-            o_step!("{}", format!("🛑 Stopping old {}", old_name).cyan());
-            let _ = session.exec(&format!("docker rm -f {}", old_name), None);
+        if !removed.is_empty() {
+            for name in removed.lines() {
+                if !name.is_empty() {
+                    o_step!("{}", format!("🛑 Stopping old {}", name).cyan());
+                }
+            }
         }
 
         // Also clean up any legacy blue-green containers
