@@ -1,5 +1,7 @@
 use reqwest::{Client, Response};
+use reqwest::header::{HeaderMap, HeaderValue};
 use anyhow::{anyhow, Context, Result};
+use crate::config::current_org;
 use crate::types::{
     ErrorResponse, LoginResponse, CiKeyResponse, RegisterResponse, WhoamiResponse,
     ProjectResponse, ServerWhoamiResponse, NodeSetResponse, ProjectListResponse,
@@ -12,7 +14,35 @@ use crate::types::{
     BindNodeResponse, BindByNameResponse, MessageResponse, CreateTunnelResponse,
 };
 
-const BASE_URL: &str = "https://api.ops.autos";
+const DEFAULT_BASE_URL: &str = "https://api.ops.autos";
+
+/// Resolve the API base URL. Allow override via OPS_API env var (handy for
+/// pointing the CLI at a local wrangler dev server during testing).
+fn base_url() -> String {
+    std::env::var("OPS_API")
+        .ok()
+        .and_then(|v| {
+            let t = v.trim().trim_end_matches('/');
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        })
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
+/// Build a reqwest Client that automatically attaches X-Ops-Org if an active
+/// org is set (via env OPS_ORG or ops.toml). Use this everywhere instead of
+/// Client::new() so org scoping is consistent.
+fn api_client() -> Client {
+    let mut headers = HeaderMap::new();
+    if let Some(org) = current_org() {
+        if let Ok(val) = HeaderValue::from_str(&org) {
+            headers.insert("X-Ops-Org", val);
+        }
+    }
+    Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
 
 async fn handle_response<T: serde::de::DeserializeOwned>(res: Response) -> Result<T> {
     let status = res.status();
@@ -29,23 +59,23 @@ async fn handle_response<T: serde::de::DeserializeOwned>(res: Response) -> Resul
 }
 
 pub async fn register(username: &str, password: &str) -> Result<RegisterResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({ "username": username, "password": password });
-    let res = client.post(format!("{}/auth/register", BASE_URL)).json(&body).send().await?;
+    let res = client.post(format!("{}/auth/register", base_url())).json(&body).send().await?;
     handle_response(res).await
 }
 
 pub async fn login(username: &str, password: &str) -> Result<LoginResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({ "username": username, "password": password });
-    let res = client.post(format!("{}/auth/login", BASE_URL)).json(&body).send().await?;
+    let res = client.post(format!("{}/auth/login", base_url())).json(&body).send().await?;
     handle_response(res).await
 }
 
 pub async fn whoami(token: &str) -> Result<WhoamiResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/me", BASE_URL))
+        .get(format!("{}/me", base_url()))
         .bearer_auth(token)
         .send()
         .await?;
@@ -53,17 +83,17 @@ pub async fn whoami(token: &str) -> Result<WhoamiResponse> {
 }
 
 pub async fn create_project(token: &str, name: &str) -> Result<ProjectResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({ "name": name });
-    let res = client.post(format!("{}/projects", BASE_URL))
+    let res = client.post(format!("{}/projects", base_url()))
         .bearer_auth(token).json(&body).send().await?;
     handle_response(res).await
 }
 
 // 支持 ops project list
 pub async fn list_projects(token: &str, name_filter: Option<&str>) -> Result<ProjectListResponse> {
-    let client = Client::new();
-    let mut url = format!("{}/projects", BASE_URL);
+    let client = api_client();
+    let mut url = format!("{}/projects", base_url());
     if let Some(name) = name_filter {
         url = format!("{}?name={}", url, name);
     }
@@ -72,8 +102,8 @@ pub async fn list_projects(token: &str, name_filter: Option<&str>) -> Result<Pro
 }
 
 pub async fn server_whoami(token: Option<&str>) -> Result<ServerWhoamiResponse> {
-    let client = Client::new();
-    let mut request_builder = client.get(format!("{}/server/whoami", BASE_URL));
+    let client = api_client();
+    let mut request_builder = client.get(format!("{}/server/whoami", base_url()));
     if let Some(t) = token {
         request_builder = request_builder.bearer_auth(t);
     }
@@ -93,7 +123,7 @@ pub async fn set_node(
     hostname: Option<&str>,
     weight: Option<u8>,
 ) -> Result<NodeSetResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "project": project,
         "environment": environment,
@@ -115,7 +145,7 @@ pub async fn set_node(
         body["weight"] = serde_json::Value::Number(w.into());
     }
 
-    let res = client.post(format!("{}/nodes/set", BASE_URL))
+    let res = client.post(format!("{}/nodes/set", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -142,7 +172,7 @@ fn extract_github_repo(git_url: &str) -> Option<String> {
 
 /// Sync app record to backend (PUT /apps/sync)
 pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> {
-    let client = Client::new();
+    let client = api_client();
 
     let app_name = config.apps.first()
         .map(|a| a.name.clone())
@@ -181,7 +211,7 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
     });
 
     let res = client
-        .put(format!("{}/apps/sync", BASE_URL))
+        .put(format!("{}/apps/sync", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -192,13 +222,13 @@ pub async fn sync_app(token: &str, config: &OpsToml) -> Result<SyncAppResponse> 
 
 /// Create deployment record (POST /apps/:id/deployments)
 pub async fn create_deployment(token: &str, app_id: i64, trigger: &str) -> Result<CreateDeploymentResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({
         "trigger": trigger
     });
 
     let res = client
-        .post(format!("{}/apps/{}/deployments", BASE_URL, app_id))
+        .post(format!("{}/apps/{}/deployments", base_url(), app_id))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -209,14 +239,14 @@ pub async fn create_deployment(token: &str, app_id: i64, trigger: &str) -> Resul
 
 /// Update deployment status (PATCH /apps/deployments/:id)
 pub async fn update_deployment(token: &str, deployment_id: i64, status: &str, logs: Option<&str>) -> Result<UpdateDeploymentResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({
         "status": status,
         "logs": logs
     });
 
     let res = client
-        .patch(format!("{}/apps/deployments/{}", BASE_URL, deployment_id))
+        .patch(format!("{}/apps/deployments/{}", base_url(), deployment_id))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -235,7 +265,7 @@ pub async fn create_node_group(
     name: Option<&str>,
     lb_strategy: &str,
 ) -> Result<CreateNodeGroupResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "project": project,
         "environment": environment,
@@ -247,7 +277,7 @@ pub async fn create_node_group(
     }
 
     let res = client
-        .post(format!("{}/node-groups", BASE_URL))
+        .post(format!("{}/node-groups", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -258,8 +288,8 @@ pub async fn create_node_group(
 
 /// List node groups (GET /node-groups)
 pub async fn list_node_groups(token: &str, project: Option<&str>) -> Result<NodeGroupListResponse> {
-    let client = Client::new();
-    let mut url = format!("{}/node-groups", BASE_URL);
+    let client = api_client();
+    let mut url = format!("{}/node-groups", base_url());
 
     if let Some(p) = project {
         url = format!("{}?project={}", url, p);
@@ -276,9 +306,9 @@ pub async fn list_node_groups(token: &str, project: Option<&str>) -> Result<Node
 
 /// Get node group details (GET /node-groups/:id)
 pub async fn get_node_group(token: &str, id: i64) -> Result<NodeGroupDetailResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/node-groups/{}", BASE_URL, id))
+        .get(format!("{}/node-groups/{}", base_url(), id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -301,9 +331,9 @@ pub struct NodeGroupSummary {
 }
 
 pub async fn get_nodes_in_env(token: &str, project: &str, environment: &str) -> Result<NodesInEnvResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/nodes/{}/{}", BASE_URL, project, environment))
+        .get(format!("{}/nodes/{}/{}", base_url(), project, environment))
         .bearer_auth(token)
         .send()
         .await?;
@@ -323,7 +353,7 @@ pub async fn init_node(
     port: Option<u16>,
     hostname: Option<&str>,
 ) -> Result<NodeInitResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "ssh_pub_key": ssh_pub_key
     });
@@ -345,7 +375,7 @@ pub async fn init_node(
     }
 
     let res = client
-        .post(format!("{}/nodes/init", BASE_URL))
+        .post(format!("{}/nodes/init", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -365,7 +395,7 @@ pub async fn reinit_node(
     port: Option<u16>,
     hostname: Option<&str>,
 ) -> Result<NodeInitResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "ssh_pub_key": ssh_pub_key
     });
@@ -387,7 +417,7 @@ pub async fn reinit_node(
     }
 
     let res = client
-        .post(format!("{}/nodes/reinit", BASE_URL))
+        .post(format!("{}/nodes/reinit", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -398,9 +428,9 @@ pub async fn reinit_node(
 
 /// List user's nodes (GET /nodes)
 pub async fn list_nodes(token: &str) -> Result<NodeListResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/nodes", BASE_URL))
+        .get(format!("{}/nodes", base_url()))
         .bearer_auth(token)
         .send()
         .await?;
@@ -410,9 +440,9 @@ pub async fn list_nodes(token: &str) -> Result<NodeListResponse> {
 
 /// Get node by ID (GET /nodes/:id)
 pub async fn get_node(token: &str, node_id: u64) -> Result<Node> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/nodes/{}", BASE_URL, node_id))
+        .get(format!("{}/nodes/{}", base_url(), node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -422,9 +452,9 @@ pub async fn get_node(token: &str, node_id: u64) -> Result<Node> {
 
 /// Delete node (DELETE /nodes/:id)
 pub async fn delete_node(token: &str, node_id: u64) -> Result<MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .delete(format!("{}/nodes/{}", BASE_URL, node_id))
+        .delete(format!("{}/nodes/{}", base_url(), node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -434,9 +464,9 @@ pub async fn delete_node(token: &str, node_id: u64) -> Result<MessageResponse> {
 
 /// Get CI key for node (GET /nodes/:id/ci-key)
 pub async fn get_node_ci_key(token: &str, node_id: u64) -> Result<CiKeyResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/nodes/{}/ci-key", BASE_URL, node_id))
+        .get(format!("{}/nodes/{}/ci-key", base_url(), node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -446,9 +476,9 @@ pub async fn get_node_ci_key(token: &str, node_id: u64) -> Result<CiKeyResponse>
 
 /// Get all deploy targets for app (GET /apps/:project/:app/deploy-targets)
 pub async fn get_app_deploy_targets(token: &str, project: &str, app: &str) -> Result<crate::types::DeployTargetsResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/apps/{}/{}/deploy-targets", BASE_URL, project, app))
+        .get(format!("{}/apps/{}/{}/deploy-targets", base_url(), project, app))
         .bearer_auth(token)
         .send()
         .await?;
@@ -458,9 +488,9 @@ pub async fn get_app_deploy_targets(token: &str, project: &str, app: &str) -> Re
 
 /// Get primary node for app (GET /apps/:project/:app/primary-node)
 pub async fn get_app_primary_node(token: &str, project: &str, app: &str) -> Result<PrimaryNodeResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/apps/{}/{}/primary-node", BASE_URL, project, app))
+        .get(format!("{}/apps/{}/{}/primary-node", base_url(), project, app))
         .bearer_auth(token)
         .send()
         .await?;
@@ -470,9 +500,9 @@ pub async fn get_app_primary_node(token: &str, project: &str, app: &str) -> Resu
 
 /// Get CI key for app (GET /apps/:project/:app/ci-key)
 pub async fn get_app_ci_key(token: &str, project: &str, app: &str) -> Result<CiKeyResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/apps/{}/{}/ci-key", BASE_URL, project, app))
+        .get(format!("{}/apps/{}/{}/ci-key", base_url(), project, app))
         .bearer_auth(token)
         .send()
         .await?;
@@ -488,7 +518,7 @@ pub async fn bind_app_node(
     is_primary: bool,
     weight: Option<u8>,
 ) -> Result<BindNodeResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "node_id": node_id,
         "is_primary": is_primary
@@ -499,7 +529,7 @@ pub async fn bind_app_node(
     }
 
     let res = client
-        .post(format!("{}/apps/{}/bind", BASE_URL, app_id))
+        .post(format!("{}/apps/{}/bind", base_url(), app_id))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -518,7 +548,7 @@ pub async fn bind_node_by_name(
     is_primary: bool,
     weight: Option<u8>,
 ) -> Result<BindByNameResponse> {
-    let client = Client::new();
+    let client = api_client();
     let mut body = serde_json::json!({
         "project": project,
         "app": app,
@@ -531,7 +561,7 @@ pub async fn bind_node_by_name(
     }
 
     let res = client
-        .post(format!("{}/apps/bind-by-name", BASE_URL))
+        .post(format!("{}/apps/bind-by-name", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -543,14 +573,14 @@ pub async fn bind_node_by_name(
 // ===== Custom Domains API =====
 
 pub async fn add_custom_domain(token: &str, project: &str, app: &str, domain: &str) -> Result<crate::types::AddDomainResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({
         "project": project,
         "app": app,
         "domain": domain,
     });
     let res = client
-        .post(format!("{}/domains", BASE_URL))
+        .post(format!("{}/domains", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -559,9 +589,9 @@ pub async fn add_custom_domain(token: &str, project: &str, app: &str, domain: &s
 }
 
 pub async fn list_custom_domains(token: &str, project: &str, app: &str) -> Result<crate::types::ListDomainsResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .get(format!("{}/domains?project={}&app={}", BASE_URL, project, app))
+        .get(format!("{}/domains?project={}&app={}", base_url(), project, app))
         .bearer_auth(token)
         .send()
         .await?;
@@ -569,9 +599,9 @@ pub async fn list_custom_domains(token: &str, project: &str, app: &str) -> Resul
 }
 
 pub async fn remove_custom_domain(token: &str, domain: &str) -> Result<crate::types::MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .delete(format!("{}/domains/{}", BASE_URL, domain))
+        .delete(format!("{}/domains/{}", base_url(), domain))
         .bearer_auth(token)
         .send()
         .await?;
@@ -581,10 +611,10 @@ pub async fn remove_custom_domain(token: &str, domain: &str) -> Result<crate::ty
 // ===== Pool Management API =====
 
 pub async fn update_node_group_strategy(token: &str, group_id: i64, strategy: &str) -> Result<crate::types::MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({ "lb_strategy": strategy });
     let res = client
-        .patch(format!("{}/node-groups/{}", BASE_URL, group_id))
+        .patch(format!("{}/node-groups/{}", base_url(), group_id))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -593,9 +623,9 @@ pub async fn update_node_group_strategy(token: &str, group_id: i64, strategy: &s
 }
 
 pub async fn drain_node(token: &str, group_id: i64, node_id: u64) -> Result<crate::types::MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .post(format!("{}/node-groups/{}/nodes/{}/drain", BASE_URL, group_id, node_id))
+        .post(format!("{}/node-groups/{}/nodes/{}/drain", base_url(), group_id, node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -603,9 +633,9 @@ pub async fn drain_node(token: &str, group_id: i64, node_id: u64) -> Result<crat
 }
 
 pub async fn undrain_node(token: &str, group_id: i64, node_id: u64) -> Result<crate::types::MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .post(format!("{}/node-groups/{}/nodes/{}/undrain", BASE_URL, group_id, node_id))
+        .post(format!("{}/node-groups/{}/nodes/{}/undrain", base_url(), group_id, node_id))
         .bearer_auth(token)
         .send()
         .await?;
@@ -619,7 +649,7 @@ pub async fn create_tunnel(
     node_id: u64,
     remote_port: u16,
 ) -> Result<crate::types::CreateTunnelResponse> {
-    let client = Client::new();
+    let client = api_client();
     let body = serde_json::json!({
         "subdomain": subdomain,
         "project_name": project_name,
@@ -627,7 +657,7 @@ pub async fn create_tunnel(
         "remote_port": remote_port,
     });
     let res = client
-        .post(format!("{}/tunnels", BASE_URL))
+        .post(format!("{}/tunnels", base_url()))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -637,9 +667,9 @@ pub async fn create_tunnel(
 
 /// Delete tunnel (DELETE /tunnels/:id)
 pub async fn delete_tunnel(token: &str, tunnel_id: i64) -> Result<MessageResponse> {
-    let client = Client::new();
+    let client = api_client();
     let res = client
-        .delete(format!("{}/tunnels/{}", BASE_URL, tunnel_id))
+        .delete(format!("{}/tunnels/{}", base_url(), tunnel_id))
         .bearer_auth(token)
         .send()
         .await?;

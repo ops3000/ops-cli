@@ -83,6 +83,10 @@ pub struct OpsToml {
     pub project: String,
     pub deploy_path: String,
     pub deploy: DeployConfig,
+    /// Optional organization slug. If set, all API calls for this project
+    /// scope to this org. Overridable by OPS_ORG env var. None = personal org.
+    #[serde(default)]
+    pub org: Option<String>,
     #[serde(default)]
     pub apps: Vec<AppDef>,
     #[serde(default)]

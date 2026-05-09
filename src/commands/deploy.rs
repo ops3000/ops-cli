@@ -14,6 +14,9 @@ pub fn load_ops_toml(path: &str) -> Result<OpsToml> {
         .with_context(|| format!("Cannot read {}", path))?;
     let config: OpsToml = toml::from_str(&content)
         .with_context(|| format!("Invalid ops.toml format in {}", path))?;
+    // Propagate the toml's org slug into the global so api_client() picks it up.
+    // OPS_ORG env var still takes precedence inside current_org().
+    config::set_active_org(config.org.clone());
     Ok(config)
 }
 

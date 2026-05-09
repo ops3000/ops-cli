@@ -458,8 +458,9 @@ async fn main() -> Result<()> {
         && std::env::var("OPS_YES").is_err()
         && std::io::stdin().is_terminal();
 
-    // Auto-update check (skip for certain commands)
-    if !matches!(
+    // Auto-update check (skip for certain commands or when OPS_SKIP_UPDATE is set)
+    let skip_update = std::env::var("OPS_SKIP_UPDATE").map(|v| !v.is_empty()).unwrap_or(false);
+    if !skip_update && !matches!(
         &cli.command,
         Commands::Update | Commands::Version | Commands::Serve { .. } | Commands::Tunnel { .. }
     ) {
