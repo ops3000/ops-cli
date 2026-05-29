@@ -398,6 +398,21 @@ pub struct NodeListResponse {
     pub nodes: Vec<Node>,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct OrgSummary {
+    pub id: i64,
+    pub slug: String,
+    pub name: String,
+    pub is_personal: bool,
+    pub role: String,
+    pub created_at: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct OrgListResponse {
+    pub orgs: Vec<OrgSummary>,
+}
+
 
 #[derive(Deserialize, Debug)]
 pub struct PrimaryNodeResponse {

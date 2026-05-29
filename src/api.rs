@@ -12,6 +12,8 @@ use crate::types::{
     // Node types
     NodeInitResponse, Node, NodeListResponse, PrimaryNodeResponse,
     BindNodeResponse, BindByNameResponse, MessageResponse, CreateTunnelResponse,
+    // Org types
+    OrgListResponse,
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.ops.autos";
@@ -455,6 +457,31 @@ pub async fn delete_node(token: &str, node_id: u64) -> Result<MessageResponse> {
     let client = api_client();
     let res = client
         .delete(format!("{}/nodes/{}", base_url(), node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    handle_response(res).await
+}
+
+/// Transfer node to another org (POST /nodes/:id/transfer)
+pub async fn transfer_node(token: &str, node_id: u64, target_org: &str) -> Result<MessageResponse> {
+    let client = api_client();
+    let res = client
+        .post(format!("{}/nodes/{}/transfer", base_url(), node_id))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "target_org": target_org }))
+        .send()
+        .await?;
+
+    handle_response(res).await
+}
+
+/// List orgs the current user is a member of (GET /orgs)
+pub async fn list_orgs(token: &str) -> Result<OrgListResponse> {
+    let client = api_client();
+    let res = client
+        .get(format!("{}/orgs", base_url()))
         .bearer_auth(token)
         .send()
         .await?;

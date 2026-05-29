@@ -642,6 +642,29 @@ fn deploy_app_zero_downtime(
             }
         }
 
+        // 8b. Orphan sweep: anything running the same image whose name
+        // doesn't fit our `{project}-{service}-{deploy_id}` convention.
+        // This catches containers that were started outside the ops
+        // deploy flow (manual `docker run`, legacy compose, ad-hoc
+        // debugging) and would otherwise quietly keep running with
+        // stale code, sharing the same Redis/DB and overwriting state
+        // the new container is producing. The 2026-05-30 ticker-cache
+        // race traced to one such orphan that had been alive for 33h.
+        let orphan_cmd = format!(
+            "docker ps -a --filter 'ancestor={}' --format '{{{{.Names}}}}' | grep -Ev '^{}-{}-' | xargs -r docker rm -f 2>/dev/null; true",
+            image, project, svc
+        );
+        let orphan_removed = session.exec_output(&orphan_cmd)
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .unwrap_or_default();
+        if !orphan_removed.is_empty() {
+            for name in orphan_removed.lines() {
+                if !name.is_empty() {
+                    o_step!("{}", format!("🧟 Reaping orphan {} (same image, off-convention name)", name).yellow());
+                }
+            }
+        }
+
         // Also clean up any legacy blue-green containers
         let _ = session.exec(&format!("rm -f {}/.ops-slot", deploy_path), None);
     }

@@ -170,3 +170,31 @@ pub async fn handle_remove(node_id: u64, force: bool, interactive: bool) -> Resu
 
     Ok(())
 }
+
+/// Transfer a node to another org
+pub async fn handle_transfer(node_id: u64, target_org: String, interactive: bool) -> Result<()> {
+    let cfg = config::load_config()
+        .context("Could not load config. Please log in with `ops login`.")?;
+    let token = cfg.token
+        .context("You are not logged in. Please run `ops login` first.")?;
+
+    o_warn!(
+        "{}",
+        format!("This will transfer node #{} to org '{}'.", node_id, target_org).yellow()
+    );
+    o_detail!("The node must already be unbound from all apps and node groups.");
+    o_detail!();
+
+    if !prompt::confirm_no("Continue?", interactive)? {
+        o_warn!("Aborted.");
+        return Ok(());
+    }
+
+    o_step!("Transferring node #{} to '{}'...", node_id, target_org);
+
+    let res = api::transfer_node(&token, node_id, &target_org).await?;
+
+    o_success!("{}", format!("✔ {}", res.message).green());
+
+    Ok(())
+}

@@ -119,6 +119,10 @@ enum Commands {
     #[command(subcommand)]
     Project(ProjectCommands),
 
+    /// Manage organizations
+    #[command(subcommand)]
+    Org(OrgCommands),
+
     /// Interact with the current server environment
     #[command(subcommand)]
     Server(ServerCommands),
@@ -299,6 +303,12 @@ enum ProjectCommands {
 }
 
 #[derive(Subcommand)]
+enum OrgCommands {
+    /// List all organizations you belong to
+    List,
+}
+
+#[derive(Subcommand)]
 enum ServerCommands {
     /// Show information about the current server based on its IP
     Whoami,
@@ -320,6 +330,14 @@ enum NodeCommands {
         /// Force deletion without confirmation
         #[arg(long)]
         force: bool,
+    },
+    /// Transfer a node to another org
+    Transfer {
+        /// Node ID
+        id: u64,
+        /// Target org slug
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -491,6 +509,7 @@ async fn main() -> Result<()> {
             NodeCommands::List => commands::node::handle_list().await,
             NodeCommands::Info { id } => commands::node::handle_info(*id).await,
             NodeCommands::Remove { id, force } => commands::node::handle_remove(*id, *force, interactive).await,
+            NodeCommands::Transfer { id, to } => commands::node::handle_transfer(*id, to.clone(), interactive).await,
         },
 
         Commands::Set { target, node, primary, region, zone, hostname, weight } =>
@@ -513,6 +532,9 @@ async fn main() -> Result<()> {
         Commands::Project(cmd) => match cmd {
             ProjectCommands::Create { name } => commands::project::handle_create_project(name.clone()).await,
             ProjectCommands::List { name } => commands::project::handle_list_projects(name.clone()).await,
+        },
+        Commands::Org(cmd) => match cmd {
+            OrgCommands::List => commands::org::handle_list().await,
         },
         Commands::Server(cmd) => match cmd {
             ServerCommands::Whoami => commands::server::handle_server_whoami().await,
