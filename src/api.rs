@@ -12,6 +12,7 @@ use crate::types::{
     // Node types
     NodeInitResponse, Node, NodeListResponse, PrimaryNodeResponse,
     BindNodeResponse, BindByNameResponse, MessageResponse, CreateTunnelResponse,
+    ReportIpResponse, TunnelTokenResponse, SshTunnelResponse,
     // Org types
     OrgListResponse,
 };
@@ -345,6 +346,60 @@ pub async fn get_nodes_in_env(token: &str, project: &str, environment: &str) -> 
 
 // ===== Nodes API =====
 
+/// 动态 IP 心跳 (POST /server/report-ip)
+/// 认证用节点的 serve token(不是用户 JWT)。后端从请求源地址读取当前出口 IP,
+/// 变化时自动更新数据库和 {id}.node.ops.autos 的 DNS 记录。
+/// lan_ip 是节点自报的内网 IP, 供 CLI 在同一局域网时直连。
+pub async fn report_node_ip(serve_token: &str, node_id: u64, lan_ip: Option<&str>) -> Result<ReportIpResponse> {
+    let client = api_client();
+    let mut body = serde_json::json!({ "node_id": node_id });
+    if let Some(ip) = lan_ip {
+        body["lan_ip"] = serde_json::Value::String(ip.to_string());
+    }
+    let res = client
+        .post(format!("{}/server/report-ip", base_url()))
+        .bearer_auth(serve_token)
+        .json(&body)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+/// serve token 换取 cloudflared 运行凭证 (POST /server/tunnel-token)
+pub async fn get_tunnel_token(serve_token: &str, node_id: u64) -> Result<TunnelTokenResponse> {
+    let client = api_client();
+    let body = serde_json::json!({ "node_id": node_id });
+    let res = client
+        .post(format!("{}/server/tunnel-token", base_url()))
+        .bearer_auth(serve_token)
+        .json(&body)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+/// 启用节点的 SSH 隧道 (POST /nodes/:id/ssh-tunnel)
+pub async fn enable_ssh_tunnel(token: &str, node_id: u64) -> Result<SshTunnelResponse> {
+    let client = api_client();
+    let res = client
+        .post(format!("{}/nodes/{}/ssh-tunnel", base_url(), node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
+/// 停用节点的 SSH 隧道 (DELETE /nodes/:id/ssh-tunnel)
+pub async fn disable_ssh_tunnel(token: &str, node_id: u64) -> Result<MessageResponse> {
+    let client = api_client();
+    let res = client
+        .delete(format!("{}/nodes/{}/ssh-tunnel", base_url(), node_id))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
 /// Initialize a new node (POST /nodes/init)
 pub async fn init_node(
     token: &str,
@@ -354,11 +409,15 @@ pub async fn init_node(
     allowed_apps: Option<Vec<String>>,
     port: Option<u16>,
     hostname: Option<&str>,
+    tunnel: bool,
 ) -> Result<NodeInitResponse> {
     let client = api_client();
     let mut body = serde_json::json!({
         "ssh_pub_key": ssh_pub_key
     });
+    if tunnel {
+        body["tunnel"] = serde_json::Value::Bool(true);
+    }
 
     if let Some(r) = region {
         body["region"] = serde_json::Value::String(r.to_string());

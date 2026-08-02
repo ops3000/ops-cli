@@ -26,6 +26,18 @@ struct AppState {
     compose_dirs: Vec<String>,
 }
 
+/// 探测默认路由网卡的内网 IP。UDP connect 不发包, 只是让内核选源地址。
+fn detect_lan_ip() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    if ip.is_loopback() || ip.is_unspecified() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
+}
+
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let auth = headers
         .get("authorization")
@@ -39,7 +51,7 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode> {
     }
 }
 
-pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Result<()> {
+pub async fn handle_serve(token: String, port: u16, compose_dir: String, node_id: Option<u64>) -> Result<()> {
     let compose_dirs: Vec<String> = compose_dir.split(',').map(|s| s.trim().to_string()).collect();
     for dir in &compose_dirs {
         if !std::path::Path::new(dir).exists() {
@@ -51,6 +63,47 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
         token,
         compose_dirs,
     });
+
+    // 动态 IP 心跳: 每 60 秒向后端上报当前出口 IP + 内网 IP (DNS TTL 也是 60s)。
+    // 公网 IP 变化时后端自动更新 {id}.node.ops.autos; 内网 IP 供 CLI 同局域网直连。
+    // 心跳响应还告知隧道开关状态, 据此拉起/停止 cloudflared 子进程。
+    if let Some(id) = node_id {
+        let heartbeat_token = state.token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut in_error_streak = false;
+            let mut cloudflared: Option<tokio::process::Child> = None;
+            loop {
+                interval.tick().await;
+                let lan_ip = detect_lan_ip();
+                match crate::api::report_node_ip(&heartbeat_token, id, lan_ip.as_deref()).await {
+                    Ok(r) => {
+                        in_error_streak = false;
+                        if r.changed {
+                            eprintln!(
+                                "{}",
+                                format!("↻ IP changed, DNS updated: {} → {}", r.domain, r.ip_address).yellow()
+                            );
+                        }
+                        if r.tunnel_enabled {
+                            crate::serve::tunnel::ensure_running(&mut cloudflared, &heartbeat_token, id).await;
+                        } else if cloudflared.is_some() {
+                            crate::serve::tunnel::stop(&mut cloudflared).await;
+                            eprintln!("{}", "cloudflared tunnel stopped (disabled remotely)".yellow());
+                        }
+                    }
+                    Err(e) => {
+                        // 只在失败序列的第一次打日志, 避免每分钟刷屏
+                        if !in_error_streak {
+                            eprintln!("{}", format!("⚠ IP report failed: {}", e).yellow());
+                        }
+                        in_error_streak = true;
+                    }
+                }
+            }
+        });
+        o_success!("{} Dynamic IP heartbeat enabled for node {}", "✓".green(), id);
+    }
 
     let app = Router::new()
         .route("/health", get(health))
@@ -98,8 +151,9 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String) -> Resu
     Ok(())
 }
 
-pub async fn handle_install(token: String, port: u16, compose_dir: String, _domain: Option<String>) -> Result<()> {
+pub async fn handle_install(token: String, port: u16, compose_dir: String, _domain: Option<String>, node_id: Option<u64>) -> Result<()> {
     let exe_path = std::env::current_exe()?;
+    let node_id_arg = node_id.map(|id| format!(" --node-id {}", id)).unwrap_or_default();
     let service = format!(
         r#"[Unit]
 Description=OPS Serve
@@ -108,7 +162,7 @@ Wants=docker.service
 
 [Service]
 Type=simple
-ExecStart={} serve --token {} --port {} --compose-dir {}
+ExecStart={} serve --token {} --port {} --compose-dir {}{}
 Restart=always
 RestartSec=5
 
@@ -118,7 +172,8 @@ WantedBy=multi-user.target
         exe_path.display(),
         token,
         port,
-        compose_dir
+        compose_dir,
+        node_id_arg
     );
 
     let service_path = "/etc/systemd/system/ops-serve.service";

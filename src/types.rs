@@ -362,6 +362,35 @@ pub struct NodeInitResponse {
     pub serve_port: u16,
     pub ci_ssh_public_key: String,
     pub region: Option<String>,
+    #[serde(default)]
+    pub ssh_tunnel_domain: Option<String>,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+
+#[derive(Deserialize, Debug)]
+pub struct ReportIpResponse {
+    pub node_id: i64,
+    pub ip_address: String,
+    pub changed: bool,
+    pub domain: String,
+    #[serde(default)]
+    pub tunnel_enabled: bool,
+}
+
+
+#[derive(Deserialize, Debug)]
+pub struct TunnelTokenResponse {
+    pub token: String,
+    pub ssh_tunnel_domain: String,
+}
+
+
+#[derive(Deserialize, Debug)]
+pub struct SshTunnelResponse {
+    pub message: String,
+    pub ssh_tunnel_domain: String,
 }
 
 
@@ -379,6 +408,12 @@ pub struct Node {
     pub status: String,
     pub last_health_check: Option<String>,
     pub has_serve_token: i64,
+    #[serde(default)]
+    pub lan_ip: Option<String>,
+    #[serde(default)]
+    pub has_ssh_tunnel: i64,
+    #[serde(default)]
+    pub ssh_tunnel_domain: Option<String>,
     pub created_at: String,
     pub bound_apps: Option<Vec<BoundApp>>,
 }

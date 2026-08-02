@@ -198,3 +198,28 @@ pub async fn handle_transfer(node_id: u64, target_org: String, interactive: bool
 
     Ok(())
 }
+
+/// ops node tunnel <id> [--disable]
+/// 启用/停用节点的 Cloudflare Tunnel SSH 通道 (无公网 IP 的机器用)
+pub async fn handle_tunnel(node_id: u64, disable: bool) -> Result<()> {
+    let cfg = config::load_config()
+        .context("Could not load config. Please log in with `ops login`.")?;
+    let token = cfg.token
+        .context("You are not logged in. Please run `ops login` first.")?;
+
+    if disable {
+        o_step!("Disabling SSH tunnel for node #{}...", node_id);
+        let res = api::disable_ssh_tunnel(&token, node_id).await?;
+        o_success!("{}", format!("✔ {}", res.message).green());
+    } else {
+        o_step!("Enabling SSH tunnel for node #{}...", node_id);
+        let res = api::enable_ssh_tunnel(&token, node_id).await?;
+        o_success!("{}", format!("✔ {}", res.message).green());
+        o_detail!();
+        o_detail!("  Tunnel domain: {}", res.ssh_tunnel_domain.cyan());
+        o_detail!("  The node daemon picks this up within a minute and starts cloudflared.");
+        o_detail!("  Clients need cloudflared installed: {}", "brew install cloudflared".cyan());
+    }
+
+    Ok(())
+}

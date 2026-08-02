@@ -197,14 +197,14 @@ Requires=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ops serve --token {} --port {} --compose-dir {}
+ExecStart=/usr/local/bin/ops serve --token {} --port {} --compose-dir {} --node-id {}
 Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
 
 [Install]
 WantedBy=multi-user.target
-"#, node_id, token, port, compose_dir);
+"#, node_id, token, port, compose_dir, node_id);
 
     let service_path = "/etc/systemd/system/ops-serve.service";
 
@@ -414,6 +414,7 @@ pub async fn handle_init(
     hostname: Option<String>,
     compose_dir: Option<String>,
     interactive: bool,
+    tunnel: bool,
 ) -> Result<()> {
     o_step!();
     o_step!("{}", "OPS Node Initialization".cyan().bold());
@@ -459,6 +460,7 @@ pub async fn handle_init(
         None,
         Some(port),
         hostname.as_deref(),
+        tunnel,
     ).await {
         Ok(r) => r,
         Err(e) => {
@@ -498,6 +500,12 @@ pub async fn handle_init(
     match &res.region {
         Some(r) => o_detail!("  Region:   {}", r.cyan()),
         None => o_detail!("  Region:   {}", "(not set, use --region to configure)".dimmed()),
+    }
+    if let Some(t) = &res.ssh_tunnel_domain {
+        o_detail!("  Tunnel:   {}", t.cyan());
+    }
+    if let Some(w) = &res.warning {
+        o_warn!("{}", format!("⚠ {}", w).yellow());
     }
 
     // 5.5 Check and install system dependencies

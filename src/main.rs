@@ -66,6 +66,9 @@ enum Commands {
         /// Docker Compose project directory for ops serve
         #[arg(long)]
         compose_dir: Option<String>,
+        /// Register via Cloudflare Tunnel (for machines without a public IP, e.g. behind CGNAT)
+        #[arg(long)]
+        tunnel: bool,
     },
 
     /// Manage nodes
@@ -254,6 +257,9 @@ enum Commands {
         /// Domain for Caddy reverse proxy (e.g. api.RedQ.ops.autos)
         #[arg(long)]
         domain: Option<String>,
+        /// Node ID for dynamic IP heartbeat (auto-updates DNS when IP changes)
+        #[arg(long)]
+        node_id: Option<u64>,
     },
 
     /// Manage custom domains for your app
@@ -338,6 +344,14 @@ enum NodeCommands {
         /// Target org slug
         #[arg(long)]
         to: String,
+    },
+    /// Enable or disable Cloudflare Tunnel SSH access for a node
+    Tunnel {
+        /// Node ID
+        id: u64,
+        /// Disable the tunnel instead of enabling it
+        #[arg(long)]
+        disable: bool,
     },
 }
 
@@ -493,7 +507,7 @@ async fn main() -> Result<()> {
         Commands::Logout => commands::logout::handle_logout().await,
         Commands::Whoami => commands::whoami::handle_whoami().await,
 
-        Commands::Init { daemon, project, app, region, port, hostname, compose_dir } =>
+        Commands::Init { daemon, project, app, region, port, hostname, compose_dir, tunnel } =>
             commands::init::handle_init(
                 *daemon,
                 project.clone(),
@@ -503,6 +517,7 @@ async fn main() -> Result<()> {
                 hostname.clone(),
                 compose_dir.clone(),
                 interactive,
+                *tunnel,
             ).await,
 
         Commands::Node(cmd) => match cmd {
@@ -510,6 +525,7 @@ async fn main() -> Result<()> {
             NodeCommands::Info { id } => commands::node::handle_info(*id).await,
             NodeCommands::Remove { id, force } => commands::node::handle_remove(*id, *force, interactive).await,
             NodeCommands::Transfer { id, to } => commands::node::handle_transfer(*id, to.clone(), interactive).await,
+            NodeCommands::Tunnel { id, disable } => commands::node::handle_tunnel(*id, *disable).await,
         },
 
         Commands::Set { target, node, primary, region, zone, hostname, weight } =>
@@ -561,11 +577,11 @@ async fn main() -> Result<()> {
         Commands::Logs { service, file, tail, follow } =>
             commands::logs::handle_logs(file.clone(), service.clone(), *tail, *follow).await,
 
-        Commands::Serve { token, port, compose_dir, install, domain } => {
+        Commands::Serve { token, port, compose_dir, install, domain, node_id } => {
             if *install {
-                commands::serve::handle_install(token.clone(), *port, compose_dir.clone(), domain.clone()).await
+                commands::serve::handle_install(token.clone(), *port, compose_dir.clone(), domain.clone(), *node_id).await
             } else {
-                commands::serve::handle_serve(token.clone(), *port, compose_dir.clone()).await
+                commands::serve::handle_serve(token.clone(), *port, compose_dir.clone(), *node_id).await
             }
         },
 

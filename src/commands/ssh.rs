@@ -6,29 +6,131 @@ use colored::Colorize;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 
+/// SSH 连接方式: 智能路由的解析结果
+enum SshRoute {
+    /// 直连 host (公网域名或局域网 IP)
+    Direct(String),
+    /// 经 Cloudflare Tunnel, 用 cloudflared access 做 ProxyCommand
+    Tunnel(String),
+}
+
+impl SshRoute {
+    fn host(&self) -> &str {
+        match self {
+            SshRoute::Direct(h) | SshRoute::Tunnel(h) => h,
+        }
+    }
+
+    /// 把路由应用到 ssh Command (Tunnel 时附加 ProxyCommand)
+    fn apply(&self, cmd: &mut Command) {
+        if let SshRoute::Tunnel(hostname) = self {
+            cmd.arg("-o").arg(format!(
+                "ProxyCommand=cloudflared access ssh --hostname {}",
+                hostname
+            ));
+        }
+    }
+}
+
+/// 400ms 内能建立 TCP 连接就认为可直连
+fn tcp_probe(ip: &str, port: u16) -> bool {
+    use std::net::ToSocketAddrs;
+    let addr = match format!("{}:{}", ip, port).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(a) => a,
+            None => return false,
+        },
+        Err(_) => return false,
+    };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(400)).is_ok()
+}
+
+fn cloudflared_available() -> bool {
+    std::process::Command::new("which")
+        .arg("cloudflared")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Node 目标的智能路由: 局域网直连 → Cloudflare Tunnel → 公网域名。
+/// 任何一步失败都回落到公网域名, 保证行为不比从前差。
+async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) -> SshRoute {
+    let node = match api::get_node(token, node_id).await {
+        Ok(n) => n,
+        Err(_) => return SshRoute::Direct(fallback_domain.to_string()),
+    };
+
+    // 1. 同一局域网内直连 (心跳上报的内网 IP, 400ms 探测)
+    if let Some(lan_ip) = &node.lan_ip {
+        if tcp_probe(lan_ip, 22) {
+            o_debug!("{}", format!("Using LAN direct connection ({})", lan_ip).green());
+            return SshRoute::Direct(lan_ip.clone());
+        }
+    }
+
+    // 2. Cloudflare Tunnel (无公网 IP 的节点)
+    if node.has_ssh_tunnel != 0 {
+        if let Some(tunnel_domain) = &node.ssh_tunnel_domain {
+            if cloudflared_available() {
+                o_debug!("Using Cloudflare Tunnel ({})", tunnel_domain);
+                return SshRoute::Tunnel(tunnel_domain.clone());
+            }
+            o_warn!(
+                "{}",
+                "This node uses a Cloudflare Tunnel but `cloudflared` is not installed.\n  Install it: brew install cloudflared (macOS) / https://developers.cloudflare.com/cloudflared/".yellow()
+            );
+        }
+    }
+
+    // 3. 公网域名
+    SshRoute::Direct(fallback_domain.to_string())
+}
+
+/// 供 scp 等其他模块复用: 解析目标的最佳连接方式。
+/// 返回 (host, 可选的 "ProxyCommand=..." 完整选项)。
+pub async fn resolve_target_route(token: &str, target: &Target) -> (String, Option<String>) {
+    let full_domain = target.domain();
+    match target {
+        Target::NodeId { id, .. } => {
+            let route = resolve_node_route(token, *id, &full_domain).await;
+            let proxy = match &route {
+                SshRoute::Tunnel(hostname) => Some(format!(
+                    "ProxyCommand=cloudflared access ssh --hostname {}",
+                    hostname
+                )),
+                SshRoute::Direct(_) => None,
+            };
+            (route.host().to_string(), proxy)
+        }
+        Target::AppTarget { .. } => (full_domain, None),
+    }
+}
+
 /// 这是一个通用的 SSH 命令构建器，其他模块可以复用
 /// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
 pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::NamedTempFile)> {
     let target = utils::parse_target(target_str)?;
     let full_domain = target.domain();
-    let ssh_target = format!("root@{}", full_domain);
 
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
 
     o_debug!("Fetching access credentials...");
 
-    // Get CI key based on target type
-    let private_key = match &target {
+    // Get CI key based on target type; node targets also resolve the best route
+    let (private_key, route) = match &target {
         Target::NodeId { id, .. } => {
             let key_resp = api::get_node_ci_key(&token, *id).await?;
-            key_resp.private_key
+            let route = resolve_node_route(&token, *id, &full_domain).await;
+            (key_resp.private_key, route)
         }
         Target::AppTarget { app, project, .. } => {
             let key_resp = api::get_app_ci_key(&token, project, app).await?;
-            key_resp.private_key
+            (key_resp.private_key, SshRoute::Direct(full_domain.clone()))
         }
     };
+    let ssh_target = format!("root@{}", route.host());
 
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", private_key)?;
@@ -44,8 +146,9 @@ pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::N
     cmd.arg("-i").arg(key_path)
        .arg("-o").arg("StrictHostKeyChecking=no")
        .arg("-o").arg("UserKnownHostsFile=/dev/null")
-       .arg("-o").arg("LogLevel=ERROR")
-       .arg(&ssh_target);
+       .arg("-o").arg("LogLevel=ERROR");
+    route.apply(&mut cmd);
+    cmd.arg(&ssh_target);
 
     Ok((cmd, temp_key_file))
 }
@@ -56,6 +159,8 @@ pub struct SshSession {
     _temp_key_file: tempfile::NamedTempFile,
     key_path: String,
     target_str: String,
+    /// Tunnel 路由时的 "ProxyCommand=..." 完整选项, ssh 和 rsync -e 都要带上
+    proxy_command: Option<String>,
 }
 
 impl SshSession {
@@ -63,22 +168,30 @@ impl SshSession {
     pub async fn connect(target_str: &str) -> Result<Self> {
         let target = utils::parse_target(target_str)?;
         let full_domain = target.domain();
-        let ssh_target = format!("root@{}", full_domain);
 
         let cfg = config::load_config().context("Config error")?;
         let token = cfg.token.context("Please run `ops login` first.")?;
 
         o_debug!("Fetching access credentials...");
 
-        let private_key = match &target {
+        let (private_key, route) = match &target {
             Target::NodeId { id, .. } => {
                 let key_resp = api::get_node_ci_key(&token, *id).await?;
-                key_resp.private_key
+                let route = resolve_node_route(&token, *id, &full_domain).await;
+                (key_resp.private_key, route)
             }
             Target::AppTarget { app, project, .. } => {
                 let key_resp = api::get_app_ci_key(&token, project, app).await?;
-                key_resp.private_key
+                (key_resp.private_key, SshRoute::Direct(full_domain.clone()))
             }
+        };
+        let ssh_target = format!("root@{}", route.host());
+        let proxy_command = match &route {
+            SshRoute::Tunnel(hostname) => Some(format!(
+                "ProxyCommand=cloudflared access ssh --hostname {}",
+                hostname
+            )),
+            SshRoute::Direct(_) => None,
         };
 
         let mut temp_key_file = tempfile::NamedTempFile::new()?;
@@ -92,7 +205,7 @@ impl SshSession {
 
         o_debug!("{}", "✔ Access granted via CI Key.".green());
 
-        Ok(Self { ssh_target, _temp_key_file: temp_key_file, key_path, target_str: target_str.to_string() })
+        Ok(Self { ssh_target, _temp_key_file: temp_key_file, key_path, target_str: target_str.to_string(), proxy_command })
     }
 
     /// 返回原始 target 标识符（如 "4" 或 "api.RedQ"），供 scp/rsync 使用
@@ -106,8 +219,11 @@ impl SshSession {
         cmd.arg("-i").arg(&self.key_path)
            .arg("-o").arg("StrictHostKeyChecking=no")
            .arg("-o").arg("UserKnownHostsFile=/dev/null")
-           .arg("-o").arg("LogLevel=ERROR")
-           .arg(&self.ssh_target);
+           .arg("-o").arg("LogLevel=ERROR");
+        if let Some(pc) = &self.proxy_command {
+            cmd.arg("-o").arg(pc);
+        }
+        cmd.arg(&self.ssh_target);
         cmd
     }
 
@@ -139,9 +255,13 @@ impl SshSession {
     /// `include` 为白名单：非空时只同步列出的路径，其余排除
     /// 支持 `..` 开头的路径（项目目录外的依赖），会单独 rsync 到远程对应子目录
     pub fn rsync_push(&self, remote_path: &str, include: &[String]) -> Result<()> {
+        // rsync 的 -e 字符串按空格分词但支持引号, ProxyCommand 的值必须整体加引号
+        let proxy_part = self.proxy_command.as_deref()
+            .map(|pc| format!(" -o \"{}\"", pc))
+            .unwrap_or_default();
         let ssh_cmd = format!(
-            "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR",
-            self.key_path
+            "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR{}",
+            self.key_path, proxy_part
         );
         let remote = format!("{}:{}/", self.ssh_target, remote_path);
 

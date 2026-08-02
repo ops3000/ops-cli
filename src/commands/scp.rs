@@ -14,17 +14,19 @@ use std::path::Path;
 pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     // 1. 解析目标
     let target = utils::parse_target(&target_str)?;
-    let full_domain = target.domain();
-
-    // 默认为 /root/，如果用户未指定路径
-    let remote_path = target.path().map(|s| s.to_string()).unwrap_or_else(|| "/root/".to_string());
-    let scp_destination = format!("root@{}:{}", full_domain, remote_path);
-
-    o_step!("Pushing {} to {}...", source.cyan(), scp_destination.cyan());
 
     // 2. 获取凭证
     let cfg = config::load_config().context("Config error")?;
     let token = cfg.token.context("Please run `ops login` first.")?;
+
+    // 智能路由: 局域网直连 → Cloudflare Tunnel → 公网域名
+    let (host, proxy_command) = super::ssh::resolve_target_route(&token, &target).await;
+
+    // 默认为 /root/，如果用户未指定路径
+    let remote_path = target.path().map(|s| s.to_string()).unwrap_or_else(|| "/root/".to_string());
+    let scp_destination = format!("root@{}:{}", host, remote_path);
+
+    o_step!("Pushing {} to {}...", source.cyan(), scp_destination.cyan());
 
     o_debug!("Fetching access credentials...");
 
@@ -58,6 +60,10 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
        .arg("-o").arg("StrictHostKeyChecking=no")
        .arg("-o").arg("UserKnownHostsFile=/dev/null")
        .arg("-o").arg("LogLevel=ERROR");
+
+    if let Some(pc) = &proxy_command {
+        cmd.arg("-o").arg(pc);
+    }
 
     // 如果源是目录，添加递归标志
     if Path::new(&source).is_dir() {
