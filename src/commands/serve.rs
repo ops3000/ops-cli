@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
@@ -151,7 +151,54 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String, node_id
     Ok(())
 }
 
+/// Windows: 注册计划任务, 对标 Linux 的 systemd 服务。
+/// 开机以 SYSTEM 运行 (无窗口), 失败每分钟自动重启。
+fn install_windows_task(token: &str, port: u16, compose_dir: &str, node_id: Option<u64>) -> Result<()> {
+    let exe_path = std::env::current_exe()?;
+    let node_id_arg = node_id.map(|id| format!(" --node-id {}", id)).unwrap_or_default();
+    let arguments = format!(
+        "serve --token {} --port {} --compose-dir {}{}",
+        token, port, compose_dir, node_id_arg
+    );
+
+    // ExecutionTimeLimit Zero: 计划任务默认跑 72 小时会被杀, 必须显式关闭
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; \
+         $action = New-ScheduledTaskAction -Execute '{exe}' -Argument '{args}'; \
+         $trigger = New-ScheduledTaskTrigger -AtStartup; \
+         $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable; \
+         Register-ScheduledTask -TaskName 'ops-serve' -Action $action -Trigger $trigger -Settings $settings -User 'SYSTEM' -RunLevel Highest -Force | Out-Null; \
+         Start-ScheduledTask -TaskName 'ops-serve'",
+        exe = exe_path.display(),
+        args = arguments,
+    );
+
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .context("Failed to run powershell")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Failed to register the scheduled task. Run this from an Administrator PowerShell.\n{}",
+            stderr.trim()
+        );
+    }
+
+    o_success!("{} Scheduled task 'ops-serve' installed and started", "✓".green());
+    o_detail!("  Runs at boot as SYSTEM (no window), auto-restarts on failure.");
+    o_detail!("  Status:    schtasks /Query /TN ops-serve");
+    o_detail!("  Stop:      schtasks /End /TN ops-serve");
+    o_detail!("  Uninstall: schtasks /Delete /TN ops-serve /F");
+    Ok(())
+}
+
 pub async fn handle_install(token: String, port: u16, compose_dir: String, _domain: Option<String>, node_id: Option<u64>) -> Result<()> {
+    if cfg!(windows) {
+        return install_windows_task(&token, port, &compose_dir, node_id);
+    }
+
     let exe_path = std::env::current_exe()?;
     let node_id_arg = node_id.map(|id| format!(" --node-id {}", id)).unwrap_or_default();
     let service = format!(

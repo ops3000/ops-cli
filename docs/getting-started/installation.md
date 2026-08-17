@@ -30,7 +30,7 @@ Installs `ops.exe` to `%LOCALAPPDATA%\ops\bin` (no admin required) and adds it t
 
 - `ops ssh` / `ops scp` use the built-in Windows OpenSSH client (`ssh.exe` / `scp.exe`), included by default since Windows 10 1809.
 - `ops push` and push-mode deploys require `rsync`, which Windows does not ship. Install it (e.g. `scoop install rsync`) or use WSL for push workflows.
-- Registering a machine as a node (`ops init --daemon`, `ops serve --install`) is Linux-only — nodes run systemd + Docker.
+- Windows machines can register as nodes (`ops init --tunnel` auto-detects your username as the SSH login user) and run the daemon in the background via `ops serve --install` (creates a Scheduled Task: runs at boot as SYSTEM, auto-restarts). Docker-based app deploys still target Linux nodes only.
 
 ## Manual Download
 
