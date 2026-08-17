@@ -9,8 +9,9 @@ use std::path::Path;
 
 /// Get the user's SSH public key
 fn get_ssh_public_key() -> Result<String> {
-    let home = std::env::var("HOME").context("Could not find HOME directory")?;
-    let ssh_dir = Path::new(&home).join(".ssh");
+    // dirs::home_dir() 跨平台: Unix 读 $HOME, Windows 读 %USERPROFILE%
+    let home = dirs::home_dir().context("Could not find home directory")?;
+    let ssh_dir = home.join(".ssh");
 
     let key_files = ["id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"];
 
@@ -508,10 +509,20 @@ pub async fn handle_init(
         o_warn!("{}", format!("⚠ {}", w).yellow());
     }
 
-    // 5.5 Check and install system dependencies
-    o_step!();
-    o_step!("{}", "Checking system dependencies...".cyan());
-    ensure_system_deps()?;
+    // 5.5 Check and install system dependencies (Linux 节点专属)
+    if cfg!(windows) {
+        o_step!();
+        o_warn!("{}", "Windows: node runtime (Docker/Caddy/systemd daemon) is Linux-only — skipping.".yellow());
+        o_warn!("{}", "To run the serve daemon manually (heartbeat + tunnel):".yellow());
+        o_detail!("  {}", format!(
+            "ops serve --token {} --port {} --node-id {}",
+            res.serve_token, res.serve_port, res.node_id
+        ).cyan());
+    } else {
+        o_step!();
+        o_step!("{}", "Checking system dependencies...".cyan());
+        ensure_system_deps()?;
+    }
 
     // 6. Add CI public key to authorized_keys
     o_step!();
@@ -519,15 +530,17 @@ pub async fn handle_init(
     ssh::add_to_authorized_keys(&res.ci_ssh_public_key)?;
     o_success!("{}", "✔ CI key added to authorized_keys".green());
 
-    // 7. Configure systemd daemon (always)
-    o_step!();
-    let compose_directory = compose_dir.as_deref().unwrap_or("/root");
-    configure_serve_daemon(
-        &res.serve_token,
-        res.serve_port,
-        res.node_id as u64,
-        compose_directory,
-    )?;
+    // 7. Configure systemd daemon (always; Windows 上面已提示手动运行)
+    if !cfg!(windows) {
+        o_step!();
+        let compose_directory = compose_dir.as_deref().unwrap_or("/root");
+        configure_serve_daemon(
+            &res.serve_token,
+            res.serve_port,
+            res.node_id as u64,
+            compose_directory,
+        )?;
+    }
 
     // Done
     o_result!();
