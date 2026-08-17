@@ -450,6 +450,16 @@ pub async fn handle_init(
         confirmed
     };
 
+    // 4.5 Windows 没有 root: 自动上报当前用户名作为节点的 SSH 登录用户
+    let ssh_user = if cfg!(windows) {
+        std::env::var("USERNAME").ok()
+    } else {
+        None
+    };
+    if let Some(u) = &ssh_user {
+        o_detail!("  SSH user: {} (auto-detected)", u.cyan());
+    }
+
     // 5. Try to initialize node
     o_step!("Registering node...");
 
@@ -462,6 +472,7 @@ pub async fn handle_init(
         Some(port),
         hostname.as_deref(),
         tunnel,
+        ssh_user.as_deref(),
     ).await {
         Ok(r) => r,
         Err(e) => {
@@ -481,6 +492,7 @@ pub async fn handle_init(
                         None,
                         Some(port),
                         hostname.as_deref(),
+                        ssh_user.as_deref(),
                     ).await?
                 } else {
                     o_warn!("Aborted.");

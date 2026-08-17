@@ -356,6 +356,13 @@ enum NodeCommands {
         #[arg(long)]
         disable: bool,
     },
+    /// Set the SSH login user for a node (e.g. Windows nodes have no root)
+    User {
+        /// Node ID
+        id: u64,
+        /// SSH login user name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -533,6 +540,7 @@ async fn main() -> Result<()> {
             NodeCommands::Remove { id, force } => commands::node::handle_remove(*id, *force, interactive).await,
             NodeCommands::Transfer { id, to } => commands::node::handle_transfer(*id, to.clone(), interactive).await,
             NodeCommands::Tunnel { id, disable } => commands::node::handle_tunnel(*id, *disable).await,
+            NodeCommands::User { id, name } => commands::node::handle_user(*id, name.clone()).await,
         },
 
         Commands::Set { target, node, primary, region, zone, hostname, weight } =>

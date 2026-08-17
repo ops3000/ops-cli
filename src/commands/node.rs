@@ -201,6 +201,19 @@ pub async fn handle_transfer(node_id: u64, target_org: String, interactive: bool
 
 /// ops node tunnel <id> [--disable]
 /// 启用/停用节点的 Cloudflare Tunnel SSH 通道 (无公网 IP 的机器用)
+/// ops node user <id> <name> — 设置节点的 SSH 登录用户
+pub async fn handle_user(node_id: u64, name: String) -> Result<()> {
+    let cfg = config::load_config()
+        .context("Could not load config. Please log in with `ops login`.")?;
+    let token = cfg.token
+        .context("You are not logged in. Please run `ops login` first.")?;
+
+    api::set_node_ssh_user(&token, node_id, &name).await?;
+    o_success!("{}", format!("✔ Node #{} SSH user set to {}", node_id, name).green());
+    o_detail!("  `ops ssh {}` now logs in as {}@... automatically.", node_id, name);
+    Ok(())
+}
+
 pub async fn handle_tunnel(node_id: u64, disable: bool) -> Result<()> {
     let cfg = config::load_config()
         .context("Could not load config. Please log in with `ops login`.")?;

@@ -19,11 +19,12 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     let token = cfg.token.context("Please run `ops login` first.")?;
 
     // 智能路由: 局域网直连 → Cloudflare Tunnel → 公网域名
-    let (host, proxy_command) = super::ssh::resolve_target_route(&token, &target).await;
+    let (host, proxy_command, node_user) = super::ssh::resolve_target_route(&token, &target).await;
+    let login = node_user.as_deref().unwrap_or("root");
 
     // 默认为 /root/，如果用户未指定路径
     let remote_path = target.path().map(|s| s.to_string()).unwrap_or_else(|| "/root/".to_string());
-    let scp_destination = format!("root@{}:{}", host, remote_path);
+    let scp_destination = format!("{}@{}:{}", login, host, remote_path);
 
     o_step!("Pushing {} to {}...", source.cyan(), scp_destination.cyan());
 

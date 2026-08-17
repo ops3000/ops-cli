@@ -67,17 +67,20 @@ fn cloudflared_available() -> bool {
 
 /// Node 目标的智能路由: 局域网直连 → Cloudflare Tunnel → 公网域名。
 /// 任何一步失败都回落到公网域名, 保证行为不比从前差。
-async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) -> SshRoute {
+/// 同时带回节点配置的 SSH 登录用户 (Windows 节点注册时自动上报, None = root)。
+async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) -> (SshRoute, Option<String>) {
     let node = match api::get_node(token, node_id).await {
         Ok(n) => n,
-        Err(_) => return SshRoute::Direct(fallback_domain.to_string()),
+        Err(_) => return (SshRoute::Direct(fallback_domain.to_string()), None),
     };
+
+    let ssh_user = node.ssh_user.clone();
 
     // 1. 同一局域网内直连 (心跳上报的内网 IP, 400ms 探测)
     if let Some(lan_ip) = &node.lan_ip {
         if tcp_probe(lan_ip, 22) {
             o_debug!("{}", format!("Using LAN direct connection ({})", lan_ip).green());
-            return SshRoute::Direct(lan_ip.clone());
+            return (SshRoute::Direct(lan_ip.clone()), ssh_user);
         }
     }
 
@@ -86,7 +89,7 @@ async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) ->
         if let Some(tunnel_domain) = &node.ssh_tunnel_domain {
             if cloudflared_available() {
                 o_debug!("Using Cloudflare Tunnel ({})", tunnel_domain);
-                return SshRoute::Tunnel(tunnel_domain.clone());
+                return (SshRoute::Tunnel(tunnel_domain.clone()), ssh_user);
             }
             o_warn!(
                 "{}",
@@ -96,16 +99,16 @@ async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) ->
     }
 
     // 3. 公网域名
-    SshRoute::Direct(fallback_domain.to_string())
+    (SshRoute::Direct(fallback_domain.to_string()), ssh_user)
 }
 
 /// 供 scp 等其他模块复用: 解析目标的最佳连接方式。
-/// 返回 (host, 可选的 "ProxyCommand=..." 完整选项)。
-pub async fn resolve_target_route(token: &str, target: &Target) -> (String, Option<String>) {
+/// 返回 (host, 可选的 "ProxyCommand=..." 完整选项, 节点配置的 SSH 用户)。
+pub async fn resolve_target_route(token: &str, target: &Target) -> (String, Option<String>, Option<String>) {
     let full_domain = target.domain();
     match target {
         Target::NodeId { id, .. } => {
-            let route = resolve_node_route(token, *id, &full_domain).await;
+            let (route, ssh_user) = resolve_node_route(token, *id, &full_domain).await;
             let proxy = match &route {
                 SshRoute::Tunnel(hostname) => Some(format!(
                     "ProxyCommand=cloudflared access ssh --hostname {}",
@@ -113,9 +116,9 @@ pub async fn resolve_target_route(token: &str, target: &Target) -> (String, Opti
                 )),
                 SshRoute::Direct(_) => None,
             };
-            (route.host().to_string(), proxy)
+            (route.host().to_string(), proxy, ssh_user)
         }
-        Target::AppTarget { .. } => (full_domain, None),
+        Target::AppTarget { .. } => (full_domain, None, None),
     }
 }
 
@@ -132,18 +135,22 @@ pub async fn build_ssh_command(target_str: &str, user: Option<&str>) -> Result<(
     o_debug!("Fetching access credentials...");
 
     // Get CI key based on target type; node targets also resolve the best route
-    let (private_key, route) = match &target {
+    let (private_key, route, node_user) = match &target {
         Target::NodeId { id, .. } => {
             let key_resp = api::get_node_ci_key(&token, *id).await?;
-            let route = resolve_node_route(&token, *id, &full_domain).await;
-            (key_resp.private_key, route)
+            let (route, ssh_user) = resolve_node_route(&token, *id, &full_domain).await;
+            (key_resp.private_key, route, ssh_user)
         }
         Target::AppTarget { app, project, .. } => {
             let key_resp = api::get_app_ci_key(&token, project, app).await?;
-            (key_resp.private_key, SshRoute::Direct(full_domain.clone()))
+            (key_resp.private_key, SshRoute::Direct(full_domain.clone()), None)
         }
     };
-    let ssh_target = format!("{}@{}", user.unwrap_or("root"), route.host());
+    // 优先级: -l 参数 > 节点配置的 ssh_user > root
+    let login = user.map(str::to_string)
+        .or(node_user)
+        .unwrap_or_else(|| "root".to_string());
+    let ssh_target = format!("{}@{}", login, route.host());
 
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", private_key)?;
@@ -184,18 +191,18 @@ impl SshSession {
 
         o_debug!("Fetching access credentials...");
 
-        let (private_key, route) = match &target {
+        let (private_key, route, node_user) = match &target {
             Target::NodeId { id, .. } => {
                 let key_resp = api::get_node_ci_key(&token, *id).await?;
-                let route = resolve_node_route(&token, *id, &full_domain).await;
-                (key_resp.private_key, route)
+                let (route, ssh_user) = resolve_node_route(&token, *id, &full_domain).await;
+                (key_resp.private_key, route, ssh_user)
             }
             Target::AppTarget { app, project, .. } => {
                 let key_resp = api::get_app_ci_key(&token, project, app).await?;
-                (key_resp.private_key, SshRoute::Direct(full_domain.clone()))
+                (key_resp.private_key, SshRoute::Direct(full_domain.clone()), None)
             }
         };
-        let ssh_target = format!("root@{}", route.host());
+        let ssh_target = format!("{}@{}", node_user.as_deref().unwrap_or("root"), route.host());
         let proxy_command = match &route {
             SshRoute::Tunnel(hostname) => Some(format!(
                 "ProxyCommand=cloudflared access ssh --hostname {}",

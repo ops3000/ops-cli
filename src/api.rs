@@ -378,6 +378,18 @@ pub async fn get_tunnel_token(serve_token: &str, node_id: u64) -> Result<TunnelT
     handle_response(res).await
 }
 
+/// 设置节点的 SSH 登录用户 (PATCH /nodes/:id)
+pub async fn set_node_ssh_user(token: &str, node_id: u64, ssh_user: &str) -> Result<MessageResponse> {
+    let client = api_client();
+    let res = client
+        .patch(format!("{}/nodes/{}", base_url(), node_id))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "ssh_user": ssh_user }))
+        .send()
+        .await?;
+    handle_response(res).await
+}
+
 /// 启用节点的 SSH 隧道 (POST /nodes/:id/ssh-tunnel)
 pub async fn enable_ssh_tunnel(token: &str, node_id: u64) -> Result<SshTunnelResponse> {
     let client = api_client();
@@ -410,6 +422,7 @@ pub async fn init_node(
     port: Option<u16>,
     hostname: Option<&str>,
     tunnel: bool,
+    ssh_user: Option<&str>,
 ) -> Result<NodeInitResponse> {
     let client = api_client();
     let mut body = serde_json::json!({
@@ -417,6 +430,9 @@ pub async fn init_node(
     });
     if tunnel {
         body["tunnel"] = serde_json::Value::Bool(true);
+    }
+    if let Some(u) = ssh_user {
+        body["ssh_user"] = serde_json::Value::String(u.to_string());
     }
 
     if let Some(r) = region {
@@ -455,11 +471,15 @@ pub async fn reinit_node(
     allowed_apps: Option<Vec<String>>,
     port: Option<u16>,
     hostname: Option<&str>,
+    ssh_user: Option<&str>,
 ) -> Result<NodeInitResponse> {
     let client = api_client();
     let mut body = serde_json::json!({
         "ssh_pub_key": ssh_pub_key
     });
+    if let Some(u) = ssh_user {
+        body["ssh_user"] = serde_json::Value::String(u.to_string());
+    }
 
     if let Some(r) = region {
         body["region"] = serde_json::Value::String(r.to_string());

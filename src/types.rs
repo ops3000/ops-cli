@@ -414,6 +414,9 @@ pub struct Node {
     pub has_ssh_tunnel: i64,
     #[serde(default)]
     pub ssh_tunnel_domain: Option<String>,
+    /// SSH 登录用户 (None = root)。Windows 节点注册时自动上报
+    #[serde(default)]
+    pub ssh_user: Option<String>,
     pub created_at: String,
     pub bound_apps: Option<Vec<BoundApp>>,
 }
