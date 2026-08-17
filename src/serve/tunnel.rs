@@ -57,13 +57,14 @@ async fn start(serve_token: &str, node_id: u64) -> Result<Child> {
 
 /// PATH 里找 cloudflared, 找不到就下载官方静态二进制到 /usr/local/bin
 async fn ensure_binary() -> Result<PathBuf> {
-    if let Ok(output) = std::process::Command::new("which").arg("cloudflared").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
+    // 跑 --version 探测 (跨平台, Windows 没有 which); 在 PATH 里就直接按名字 spawn
+    let probe = std::process::Command::new("cloudflared")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if probe.map(|s| s.success()).unwrap_or(false) {
+        return Ok(PathBuf::from("cloudflared"));
     }
 
     let install = PathBuf::from(INSTALL_PATH);
@@ -97,8 +98,11 @@ async fn ensure_binary() -> Result<PathBuf> {
     tokio::fs::write(&install, &bytes)
         .await
         .with_context(|| format!("Failed to write {} (are we root?)", INSTALL_PATH))?;
-    use std::os::unix::fs::PermissionsExt;
-    tokio::fs::set_permissions(&install, std::fs::Permissions::from_mode(0o755)).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&install, std::fs::Permissions::from_mode(0o755)).await?;
+    }
 
     eprintln!("{}", format!("✓ cloudflared installed to {}", INSTALL_PATH).green());
     Ok(install)

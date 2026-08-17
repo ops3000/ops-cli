@@ -27,7 +27,15 @@ if [ "$OS" = "linux" ]; then
 elif [ "$OS" = "darwin" ]; then
     ASSET_PREFIX="ops-darwin"
 else
-    echo "Unsupported OS: $OS"
+    case "$OS" in
+        mingw*|msys*|cygwin*)
+            echo "For native Windows, run in PowerShell:"
+            echo '  powershell -ExecutionPolicy Bypass -c "irm https://get.ops.autos/install.ps1 | iex"'
+            ;;
+        *)
+            echo "Unsupported OS: $OS"
+            ;;
+    esac
     exit 1
 fi
 

@@ -1,9 +1,8 @@
-use crate::{api, config};
+use crate::{api, config, utils};
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
 use rand::Rng;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -46,10 +45,7 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
 
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", key_resp.private_key)?;
-    let meta = temp_key_file.as_file().metadata()?;
-    let mut perms = meta.permissions();
-    perms.set_mode(0o600);
-    temp_key_file.as_file().set_permissions(perms)?;
+    utils::secure_key_permissions(temp_key_file.as_file())?;
     let key_path = temp_key_file.path().to_str().unwrap().to_string();
 
     let node_domain = format!("{}.node.ops.autos", node_id);
@@ -76,7 +72,7 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     let mut child = Command::new("ssh")
         .arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("UserKnownHostsFile=/dev/null")
+        .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
         .arg("-o").arg("LogLevel=ERROR")
         .arg(&ssh_target)
         .arg(&upload_cmd)
@@ -98,7 +94,7 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     let status = Command::new("ssh")
         .arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("UserKnownHostsFile=/dev/null")
+        .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
         .arg("-o").arg("LogLevel=ERROR")
         .arg(&ssh_target)
         .arg(reload_cmd)
@@ -124,7 +120,7 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     let ssh_child = Command::new("ssh")
         .arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("UserKnownHostsFile=/dev/null")
+        .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
         .arg("-o").arg("LogLevel=ERROR")
         .arg("-o").arg("ServerAliveInterval=15")
         .arg("-o").arg("ServerAliveCountMax=3")
@@ -187,7 +183,7 @@ fn cleanup_caddy(key_path: &str, ssh_target: &str, conf_name: &str) -> Result<()
     Command::new("ssh")
         .arg("-i").arg(key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
-        .arg("-o").arg("UserKnownHostsFile=/dev/null")
+        .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
         .arg("-o").arg("LogLevel=ERROR")
         .arg(ssh_target)
         .arg(&cmd)

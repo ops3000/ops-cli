@@ -471,6 +471,10 @@ enum PoolCommands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 旧版 conhost 默认不解析 ANSI 转义, 需要显式开启虚拟终端
+    #[cfg(windows)]
+    let _ = colored::control::set_virtual_terminal(true);
+
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 

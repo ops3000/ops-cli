@@ -6,15 +6,20 @@ use self_update::update::Release;
 
 const REPO_OWNER: &str = "ops3000";
 const REPO_NAME: &str = "ops-cli";
-const BIN_NAME: &str = "ops";
+// tar.gz 里的二进制名: Windows 打包的是 ops.exe
+const BIN_NAME: &str = if cfg!(windows) { "ops.exe" } else { "ops" };
 
 fn get_asset_name() -> &'static str {
     if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
         "ops-linux-amd64.tar.gz"
+    } else if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") {
+        "ops-linux-arm64.tar.gz"
     } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
         "ops-darwin-amd64.tar.gz"
     } else if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
         "ops-darwin-arm64.tar.gz"
+    } else if cfg!(target_os = "windows") && cfg!(target_arch = "x86_64") {
+        "ops-windows-amd64.tar.gz"
     } else {
         panic!("Unsupported platform for self-update")
     }

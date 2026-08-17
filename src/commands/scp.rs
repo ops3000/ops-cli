@@ -6,7 +6,6 @@ use anyhow::{Context, Result};
 use std::process::Command;
 use colored::Colorize;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Push files to a target
@@ -45,11 +44,7 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     // 3. 准备私钥文件
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", private_key)?;
-
-    let meta = temp_key_file.as_file().metadata()?;
-    let mut perms = meta.permissions();
-    perms.set_mode(0o600);
-    temp_key_file.as_file().set_permissions(perms)?;
+    utils::secure_key_permissions(temp_key_file.as_file())?;
 
     let key_path = temp_key_file.path().to_str().unwrap();
 
@@ -58,7 +53,7 @@ pub async fn handle_push(source: String, target_str: String) -> Result<()> {
     let mut cmd = Command::new("scp");
     cmd.arg("-i").arg(key_path)
        .arg("-o").arg("StrictHostKeyChecking=no")
-       .arg("-o").arg("UserKnownHostsFile=/dev/null")
+       .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
        .arg("-o").arg("LogLevel=ERROR");
 
     if let Some(pc) = &proxy_command {

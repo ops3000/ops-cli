@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use std::process::{Command, Stdio};
 use colored::Colorize;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 
 /// SSH 连接方式: 智能路由的解析结果
 enum SshRoute {
@@ -45,11 +44,24 @@ fn tcp_probe(ip: &str, port: u16) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(400)).is_ok()
 }
 
+fn rsync_available() -> bool {
+    std::process::Command::new("rsync")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 直接跑 `cloudflared --version` 探测, 跨平台 (Windows 没有 which)
 fn cloudflared_available() -> bool {
-    std::process::Command::new("which")
-        .arg("cloudflared")
-        .output()
-        .map(|o| o.status.success())
+    std::process::Command::new("cloudflared")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
         .unwrap_or(false)
 }
 
@@ -134,10 +146,7 @@ pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::N
 
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", private_key)?;
-    let meta = temp_key_file.as_file().metadata()?;
-    let mut perms = meta.permissions();
-    perms.set_mode(0o600);
-    temp_key_file.as_file().set_permissions(perms)?;
+    utils::secure_key_permissions(temp_key_file.as_file())?;
 
     o_debug!("{}", "✔ Access granted via CI Key.".green());
     let key_path = temp_key_file.path().to_str().unwrap();
@@ -145,7 +154,7 @@ pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::N
     let mut cmd = Command::new("ssh");
     cmd.arg("-i").arg(key_path)
        .arg("-o").arg("StrictHostKeyChecking=no")
-       .arg("-o").arg("UserKnownHostsFile=/dev/null")
+       .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
        .arg("-o").arg("LogLevel=ERROR");
     route.apply(&mut cmd);
     cmd.arg(&ssh_target);
@@ -196,10 +205,7 @@ impl SshSession {
 
         let mut temp_key_file = tempfile::NamedTempFile::new()?;
         writeln!(temp_key_file, "{}", private_key)?;
-        let meta = temp_key_file.as_file().metadata()?;
-        let mut perms = meta.permissions();
-        perms.set_mode(0o600);
-        temp_key_file.as_file().set_permissions(perms)?;
+        utils::secure_key_permissions(temp_key_file.as_file())?;
 
         let key_path = temp_key_file.path().to_str().unwrap().to_string();
 
@@ -218,7 +224,7 @@ impl SshSession {
         let mut cmd = Command::new("ssh");
         cmd.arg("-i").arg(&self.key_path)
            .arg("-o").arg("StrictHostKeyChecking=no")
-           .arg("-o").arg("UserKnownHostsFile=/dev/null")
+           .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
            .arg("-o").arg("LogLevel=ERROR");
         if let Some(pc) = &self.proxy_command {
             cmd.arg("-o").arg(pc);
@@ -255,13 +261,21 @@ impl SshSession {
     /// `include` 为白名单：非空时只同步列出的路径，其余排除
     /// 支持 `..` 开头的路径（项目目录外的依赖），会单独 rsync 到远程对应子目录
     pub fn rsync_push(&self, remote_path: &str, include: &[String]) -> Result<()> {
-        // rsync 的 -e 字符串按空格分词但支持引号, ProxyCommand 的值必须整体加引号
+        // Windows 原生没有 rsync, 提前给出明确提示而不是让命令启动失败
+        if cfg!(windows) && !rsync_available() {
+            anyhow::bail!(
+                "rsync not found. `ops push` / push-mode deploy requires rsync.\n  \
+                 Install it (e.g. `scoop install rsync` or MSYS2/cwRsync), or use WSL."
+            );
+        }
+        // rsync 的 -e 字符串按空格分词但支持引号, ProxyCommand 的值必须整体加引号;
+        // key 路径也加引号 (Windows 临时目录可能含空格)
         let proxy_part = self.proxy_command.as_deref()
             .map(|pc| format!(" -o \"{}\"", pc))
             .unwrap_or_default();
         let ssh_cmd = format!(
-            "ssh -i {} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR{}",
-            self.key_path, proxy_part
+            "ssh -i \"{}\" -o StrictHostKeyChecking=no -o {} -o LogLevel=ERROR{}",
+            self.key_path, utils::SSH_KNOWN_HOSTS_OPT, proxy_part
         );
         let remote = format!("{}:{}/", self.ssh_target, remote_path);
 

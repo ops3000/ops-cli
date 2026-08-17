@@ -87,6 +87,7 @@ fn parse_meminfo_value(line: &str) -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(unix)]
 fn read_disk() -> Result<(f64, f64)> {
     let stat = nix::sys::statvfs::statvfs("/")?;
     let total_bytes = stat.blocks() as u64 * stat.fragment_size() as u64;
@@ -95,6 +96,12 @@ fn read_disk() -> Result<(f64, f64)> {
 
     let to_gb = |b: u64| (b as f64 / 1_073_741_824.0 * 10.0).round() / 10.0;
     Ok((to_gb(used_bytes), to_gb(total_bytes)))
+}
+
+// serve 端指标只支持 Linux 节点; 非 Unix 平台编译占位, caller 用 unwrap_or 兜底
+#[cfg(not(unix))]
+fn read_disk() -> Result<(f64, f64)> {
+    anyhow::bail!("disk metrics not supported on this platform")
 }
 
 fn read_uptime() -> Result<u64> {

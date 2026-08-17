@@ -1,6 +1,6 @@
 [package]
 name = "ops-cli"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 
 [[bin]]
@@ -32,5 +32,8 @@ shellexpand = "3.1"
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
 tokio-stream = "0.1"
-nix = { version = "0.29", features = ["fs"] }
 rand = "0.8"
+
+# nix 只在 Unix 上可用 (serve 端磁盘指标); Windows 构建不拉取
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs"] }

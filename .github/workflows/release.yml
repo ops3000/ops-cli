@@ -35,6 +35,11 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: ops-darwin-arm64
+          # Windows 也打 tar.gz (内含 ops.exe): Win10+ 自带 tar.exe, 且 self_update
+          # 的解包逻辑全平台走同一条 Tar(Gz) 路径, 不用为 zip 多拉一套 feature
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: ops-windows-amd64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -55,10 +60,16 @@ jobs:
       - name: Package + checksum
         shell: bash
         run: |
-          bin="target/${{ matrix.target }}/release/ops"
-          strip "$bin" || true   # smaller binary (best-effort; native build so strip matches)
-          tar -C "$(dirname "$bin")" -czf "${{ matrix.asset_name }}.tar.gz" ops
-          shasum -a 256 "${{ matrix.asset_name }}.tar.gz" > "${{ matrix.asset_name }}.tar.gz.sha256"
+          bin_name="ops"
+          if [[ "${{ matrix.os }}" == windows-* ]]; then bin_name="ops.exe"; fi
+          bin="target/${{ matrix.target }}/release/$bin_name"
+          strip "$bin" 2>/dev/null || true   # smaller binary (best-effort; no-op on Windows)
+          tar -C "$(dirname "$bin")" -czf "${{ matrix.asset_name }}.tar.gz" "$bin_name"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${{ matrix.asset_name }}.tar.gz" > "${{ matrix.asset_name }}.tar.gz.sha256"
+          else
+            sha256sum "${{ matrix.asset_name }}.tar.gz" > "${{ matrix.asset_name }}.tar.gz.sha256"
+          fi
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2

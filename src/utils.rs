@@ -2,6 +2,28 @@
 
 use anyhow::{anyhow, Result};
 
+/// ssh 的 UserKnownHostsFile 空设备: Windows 的 OpenSSH 不识别 /dev/null, 要用 NUL
+pub const SSH_KNOWN_HOSTS_OPT: &str = if cfg!(windows) {
+    "UserKnownHostsFile=NUL"
+} else {
+    "UserKnownHostsFile=/dev/null"
+};
+
+/// 收紧私钥临时文件权限。Unix 下 chmod 600 (OpenSSH 强制要求);
+/// Windows 下 %TEMP% 的 ACL 默认仅限当前用户, Win32-OpenSSH 直接接受, 无需处理。
+pub fn secure_key_permissions(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = file.metadata()?.permissions();
+        perms.set_mode(0o600);
+        file.set_permissions(perms)?;
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
+}
+
 /// Target type that supports both Node IDs and App targets
 #[derive(Debug, Clone)]
 pub enum Target {

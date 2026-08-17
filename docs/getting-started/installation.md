@@ -2,18 +2,35 @@
 
 ## One-Line Install (Recommended)
 
+**Linux / macOS:**
+
 ```bash
 curl -fsSL https://get.ops.autos | sh
 ```
 
 This detects your OS and architecture automatically and installs the `ops` binary to `/usr/local/bin`.
 
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://get.ops.autos/install.ps1 | iex"
+```
+
+Installs `ops.exe` to `%LOCALAPPDATA%\ops\bin` (no admin required) and adds it to your user `PATH`. Requires Windows 10 1809+ (for the built-in OpenSSH client and `tar.exe`).
+
 **Supported platforms:**
 
-| OS    | Architecture       |
-| ----- | ------------------ |
-| Linux | x86\_64, arm64     |
-| macOS | x86\_64 (Intel), arm64 (Apple Silicon) |
+| OS      | Architecture       |
+| ------- | ------------------ |
+| Linux   | x86\_64, arm64     |
+| macOS   | x86\_64 (Intel), arm64 (Apple Silicon) |
+| Windows | x86\_64 (arm64 via x64 emulation) |
+
+**Windows notes:**
+
+- `ops ssh` / `ops scp` use the built-in Windows OpenSSH client (`ssh.exe` / `scp.exe`), included by default since Windows 10 1809.
+- `ops push` and push-mode deploys require `rsync`, which Windows does not ship. Install it (e.g. `scoop install rsync`) or use WSL for push workflows.
+- Registering a machine as a node (`ops init --daemon`, `ops serve --install`) is Linux-only — nodes run systemd + Docker.
 
 ## Manual Download
 
