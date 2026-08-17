@@ -103,6 +103,9 @@ enum Commands {
         target: String,
         /// (Optional) Command to execute on the remote server
         command: Option<String>,
+        /// SSH login user (default: root; Windows nodes have no root)
+        #[arg(short = 'l', long)]
+        user: Option<String>,
     },
 
     /// Push a file or directory to the server (format: source app.project[:/remote/path])
@@ -248,8 +251,8 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8377")]
         port: u16,
-        /// Docker Compose project directory
-        #[arg(long)]
+        /// Docker Compose project directory (heartbeat/tunnel-only nodes can leave the default)
+        #[arg(long, default_value = ".")]
         compose_dir: String,
         /// Install as systemd service and configure Caddy reverse proxy
         #[arg(long)]
@@ -534,7 +537,7 @@ async fn main() -> Result<()> {
 
         Commands::Set { target, node, primary, region, zone, hostname, weight } =>
             commands::set::handle_set(target.clone(), *node, *primary, region.clone(), zone.clone(), hostname.clone(), *weight, interactive).await,
-        Commands::Ssh { target, command } => commands::ssh::handle_ssh(target.clone(), command.clone()).await,
+        Commands::Ssh { target, command, user } => commands::ssh::handle_ssh(target.clone(), command.clone(), user.as_deref()).await,
         Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
 
         Commands::Token => commands::token::handle_get_token().await,

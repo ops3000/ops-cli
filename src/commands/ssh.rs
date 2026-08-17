@@ -121,7 +121,8 @@ pub async fn resolve_target_route(token: &str, target: &Target) -> (String, Opti
 
 /// 这是一个通用的 SSH 命令构建器，其他模块可以复用
 /// Supports both Node ID (e.g., "12345") and App target (e.g., "api.RedQ")
-pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::NamedTempFile)> {
+/// `user`: SSH 登录用户, 默认 root (Windows 节点没有 root, 用 -l 指定)
+pub async fn build_ssh_command(target_str: &str, user: Option<&str>) -> Result<(Command, tempfile::NamedTempFile)> {
     let target = utils::parse_target(target_str)?;
     let full_domain = target.domain();
 
@@ -142,7 +143,7 @@ pub async fn build_ssh_command(target_str: &str) -> Result<(Command, tempfile::N
             (key_resp.private_key, SshRoute::Direct(full_domain.clone()))
         }
     };
-    let ssh_target = format!("root@{}", route.host());
+    let ssh_target = format!("{}@{}", user.unwrap_or("root"), route.host());
 
     let mut temp_key_file = tempfile::NamedTempFile::new()?;
     writeln!(temp_key_file, "{}", private_key)?;
@@ -365,8 +366,8 @@ impl SshSession {
 }
 
 // ops ssh <target> [command]
-pub async fn handle_ssh(target_str: String, command: Option<String>) -> Result<()> {
-    let (mut cmd, _temp_key_file) = build_ssh_command(&target_str).await?;
+pub async fn handle_ssh(target_str: String, command: Option<String>, user: Option<&str>) -> Result<()> {
+    let (mut cmd, _temp_key_file) = build_ssh_command(&target_str, user).await?;
 
     if let Some(remote_cmd) = command {
         o_step!("Executing on {}...", target_str.cyan());
@@ -389,7 +390,7 @@ pub async fn handle_ssh(target_str: String, command: Option<String>) -> Result<(
 
 // 用于 env upload
 pub async fn execute_remote_command(target_str: &str, command: &str, stdin_data: Option<&str>) -> Result<()> {
-    let (mut cmd, _temp_key_file) = build_ssh_command(target_str).await?;
+    let (mut cmd, _temp_key_file) = build_ssh_command(target_str, None).await?;
     cmd.arg(command);
 
     if let Some(data) = stdin_data {
@@ -413,7 +414,7 @@ pub async fn execute_remote_command(target_str: &str, command: &str, stdin_data:
 
 // 用于 env download
 pub async fn execute_remote_command_with_output(target_str: &str, command: &str) -> Result<Vec<u8>> {
-    let (mut cmd, _temp_key_file) = build_ssh_command(target_str).await?;
+    let (mut cmd, _temp_key_file) = build_ssh_command(target_str, None).await?;
     cmd.arg(command);
 
     let output = cmd.output().context("Failed to execute remote command and capture output")?;

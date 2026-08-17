@@ -25,6 +25,6 @@ pub async fn handle_logs(file: String, service: String, tail: u32, follow: bool)
         config.deploy_path, tail, follow_flag, service
     );
 
-    ssh::handle_ssh(t.domain.clone(), Some(cmd)).await?;
+    ssh::handle_ssh(t.domain.clone(), Some(cmd), None).await?;
     Ok(())
 }
