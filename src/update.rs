@@ -111,9 +111,16 @@ pub fn update_self() -> Result<()> {
     let new_exe = tmp_dir.path().join(BIN_NAME);
     let current_exe = std::env::current_exe()?;
 
+    // Windows 不能覆盖运行中的 exe, 但允许改名: 旧文件先挪到同目录的 .old,
+    // 新文件再落到原名 (同目录保证同卷, rename 才有效)。上次残留的 .old 先清掉;
+    // 本次的 .old 在 Windows 上因为还在运行删不掉, 留给下一次更新清理。
+    let old_exe = current_exe.with_extension("old");
+    let _ = std::fs::remove_file(&old_exe);
+
     self_update::Move::from_source(&new_exe)
-        .replace_using_temp(&current_exe)
+        .replace_using_temp(&old_exe)
         .to_dest(&current_exe)?;
+    let _ = std::fs::remove_file(&old_exe);
 
     o_success!(
         "{}",
@@ -181,9 +188,14 @@ pub fn check_and_auto_update() -> Result<bool> {
         let new_exe = tmp_dir.path().join(BIN_NAME);
         let current_exe = std::env::current_exe()?;
 
+        // 同 update_self: 经由同目录 .old 中转, Windows 上才能替换运行中的 exe
+        let old_exe = current_exe.with_extension("old");
+        let _ = std::fs::remove_file(&old_exe);
+
         self_update::Move::from_source(&new_exe)
-            .replace_using_temp(&current_exe)
+            .replace_using_temp(&old_exe)
             .to_dest(&current_exe)?;
+        let _ = std::fs::remove_file(&old_exe);
 
         o_success!(
             "{}",
