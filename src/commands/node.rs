@@ -38,13 +38,17 @@ pub async fn handle_list() -> Result<()> {
 
         let region_str = node.region.as_deref().unwrap_or("-");
         let hostname_str = node.hostname.as_deref().unwrap_or(&node.ip_address);
+        let lan_str = node.lan_ip.as_deref()
+            .map(|l| format!(" lan:{}", l))
+            .unwrap_or_default();
 
         o_detail!(
-            "  {} {} {} ({}) region:{} [{}]",
+            "  {} {} {} ({}{}) region:{} [{}]",
             status_icon,
             format!("#{}", node.id).dimmed(),
             hostname_str.cyan().bold(),
             node.ip_address,
+            lan_str,
             region_str,
             serve_status
         );
@@ -83,6 +87,16 @@ pub async fn handle_info(node_id: u64) -> Result<()> {
     o_detail!("  Status:      {} {}", status_icon, node.status);
     o_detail!("  Domain:      {}", node.domain.cyan());
     o_detail!("  IP Address:  {}", node.ip_address);
+
+    if let Some(lan_ip) = &node.lan_ip {
+        o_detail!("  LAN IP:      {}", lan_ip.cyan());
+    }
+    if let Some(tunnel) = &node.ssh_tunnel_domain {
+        o_detail!("  SSH Tunnel:  {}", tunnel.cyan());
+    }
+    if let Some(user) = &node.ssh_user {
+        o_detail!("  SSH User:    {}", user.cyan());
+    }
 
     if let Some(hostname) = node.hostname {
         o_detail!("  Hostname:    {}", hostname);

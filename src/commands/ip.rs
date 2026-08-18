@@ -1,6 +1,7 @@
 // src/commands/ip.rs
 
-use crate::utils;
+use crate::{api, config, utils};
+use crate::utils::Target;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::net::ToSocketAddrs;
@@ -10,6 +11,20 @@ use std::net::ToSocketAddrs;
 pub async fn handle_ip(target_str: String) -> Result<()> {
     let target = utils::parse_target(&target_str)?;
     let full_domain = target.domain();
+
+    // Node 目标优先走 API: 除了公网 IP 还能拿到心跳上报的内网 IP。
+    // 未登录或 API 失败时回落到下面的 DNS 解析。
+    if let Target::NodeId { id, .. } = &target {
+        if let Some(token) = config::load_config().ok().and_then(|c| c.token) {
+            if let Ok(node) = api::get_node(&token, *id).await {
+                println!("{}", node.ip_address.green());
+                if let Some(lan) = &node.lan_ip {
+                    println!("{} {}", lan.cyan(), "(LAN)".dimmed());
+                }
+                return Ok(());
+            }
+        }
+    }
 
     o_step!("Resolving IP for {}...", full_domain.cyan());
 
