@@ -450,11 +450,20 @@ pub async fn handle_init(
         confirmed
     };
 
-    // 4.5 Windows 没有 root: 自动上报当前用户名作为节点的 SSH 登录用户
+    // 4.5 节点的 SSH 登录用户。None = root, 自建服务器上的常态。
+    //
+    // 两种情况下 root 不是答案:
+    //   · Windows 根本没有 root;
+    //   · Unix 上 sshd 配了 PermitRootLogin no —— 云镜像 (GCP / AWS / 多数
+    //     发行版官方镜像) 的默认值。这种机器上 CI key 会被装进
+    //     /root/.ssh/authorized_keys, 位置和权限都对, 而那个用户永远不被允许
+    //     登录, 于是 `ops ssh` 报 Permission denied (publickey) —— 一个看起来
+    //     像"key 没装对"的错误, 让人去查一把一直好着的 key。
+    //     `ssh::ci_key_login_user` 同时决定了 key 装给谁, 两者必须一致。
     let ssh_user = if cfg!(windows) {
         std::env::var("USERNAME").ok()
     } else {
-        None
+        crate::ssh::ci_key_login_user()
     };
     if let Some(u) = &ssh_user {
         o_detail!("  SSH user: {} (auto-detected)", u.cyan());
