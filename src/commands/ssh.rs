@@ -31,9 +31,31 @@ impl SshRoute {
     }
 }
 
-/// 400ms 内能建立 TCP 连接就认为可直连
-fn tcp_probe(ip: &str, port: u16) -> bool {
+/// 对面是不是真的有个 sshd 在等我们 —— 连上并读到 SSH 协议横幅才算数。
+///
+/// 判据不是「TCP 能建立」, 而且这个区别是这个函数存在的全部理由。一台开着
+/// 全局 VPN / TUN 代理的机器 (Clash, sing-box, Karing, WARP…) 会把默认路由
+/// 指向隧道, 而隧道的用户态栈是**先接受本地连接, 再去连后端** —— 于是
+/// `connect_timeout` 对任何 IP 任何端口都立刻成功, 包括根本没人监听的端口。
+/// 拿它当"可直连"的证据, 等于问一个总是答"是"的证人。
+///
+/// 真实后果 (2026-08-20): 一台 GCP 机器的 lan_ip 是它的 VPC 内网地址
+/// `10.140.0.2`, CLI 所在的 Mac 显然不在那个 VPC 里, 但 Mac 开着全局代理,
+/// 探测返回 true, 于是 `ops ssh` 一头撞进死路, 报
+/// `kex_exchange_identification: read: Connection reset by peer` —— 一个
+/// 指向 SSH 握手的错误, 而真正的问题是地址根本不通。公网那条路明明是好的。
+/// 这类云 (GCP / AWS / 阿里云…) 全都中招: 实例自己只看得见内网地址, 公网 IP
+/// 在 NAT 后面, 所以 `ops init` 一定会把 VPC 内网地址记成 lan_ip。
+///
+/// 读横幅额外挡住的:端口被别的服务占着 (那也不该走 SSH)、中间有个 TCP 层
+/// 负载均衡接了连接但后端是空的。两种情况下回落公网都是对的。
+///
+/// 预算 ~800ms 最坏情况 (连接 400 + 读 400)。局域网里的 sshd 连上就发横幅,
+/// 通常几毫秒;慢到读不着, 那也不配叫"直连"。
+fn ssh_probe(ip: &str, port: u16) -> bool {
+    use std::io::Read;
     use std::net::ToSocketAddrs;
+
     let addr = match format!("{}:{}", ip, port).to_socket_addrs() {
         Ok(mut addrs) => match addrs.next() {
             Some(a) => a,
@@ -41,7 +63,25 @@ fn tcp_probe(ip: &str, port: u16) -> bool {
         },
         Err(_) => return false,
     };
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(400)).is_ok()
+    let timeout = std::time::Duration::from_millis(400);
+    let mut stream = match std::net::TcpStream::connect_timeout(&addr, timeout) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    if stream.set_read_timeout(Some(timeout)).is_err() {
+        return false;
+    }
+    // "SSH-" 就够断言了: 协议规定服务端一连上就先发 `SSH-<版本>-<软件>`。
+    let mut buf = [0u8; 4];
+    let mut got = 0;
+    while got < buf.len() {
+        match stream.read(&mut buf[got..]) {
+            Ok(0) => return false, // 对端直接关了 —— 隧道连不上后端时就是这样
+            Ok(n) => got += n,
+            Err(_) => return false, // 读超时 = 没人说话
+        }
+    }
+    &buf == b"SSH-"
 }
 
 fn rsync_available() -> bool {
@@ -76,9 +116,10 @@ async fn resolve_node_route(token: &str, node_id: u64, fallback_domain: &str) ->
 
     let ssh_user = node.ssh_user.clone();
 
-    // 1. 同一局域网内直连 (心跳上报的内网 IP, 400ms 探测)
+    // 1. 同一局域网内直连 (心跳上报的内网 IP)。探测要求读到 SSH 横幅, 不是
+    //    只要 TCP 能连上 —— 见 `ssh_probe`: 全局 VPN 会让后者对任何地址都成立。
     if let Some(lan_ip) = &node.lan_ip {
-        if tcp_probe(lan_ip, 22) {
+        if ssh_probe(lan_ip, 22) {
             o_debug!("{}", format!("Using LAN direct connection ({})", lan_ip).green());
             return (SshRoute::Direct(lan_ip.clone()), ssh_user);
         }
@@ -430,4 +471,69 @@ pub async fn execute_remote_command_with_output(target_str: &str, command: &str)
         return Err(anyhow::anyhow!("Remote command failed with status: {}. Stderr: {}", output.status, stderr));
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    /// 起一个假服务器: 接受一条连接, 按 `speak` 决定说什么, 然后关闭。
+    /// 返回它的端口。
+    fn fake_server(speak: Option<&'static [u8]>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                if let Some(bytes) = speak {
+                    let _ = sock.write_all(bytes);
+                    let _ = sock.flush();
+                    // 让对端有机会读完再关。
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                // speak = None ⇒ 立刻 drop, 这正是隧道连不上后端时的行为。
+            }
+        });
+        port
+    }
+
+    /// 真的 sshd: 连上就发横幅。
+    #[test]
+    fn a_real_sshd_is_reachable() {
+        let port = fake_server(Some(b"SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.16\r\n"));
+        assert!(ssh_probe("127.0.0.1", port));
+    }
+
+    /// THE BUG. 一个接受 TCP 然后一言不发就关掉的对端 —— 全局 VPN / TUN 代理
+    /// 对它够不着的地址就是这个表现。旧的 `tcp_probe` 在这里返回 true, 于是
+    /// `ops ssh` 选了一条走不通的路, 并用一个 SSH 握手错误来报告一个路由问题。
+    #[test]
+    fn a_tunnel_that_accepts_and_hangs_up_is_not_reachable() {
+        let port = fake_server(None);
+        assert!(
+            !ssh_probe("127.0.0.1", port),
+            "accepting a TCP connection is not evidence that anything is listening"
+        );
+    }
+
+    /// 端口被别的服务占着 (HTTP / 数据库 / 随便什么) 也不是 SSH。
+    #[test]
+    fn some_other_service_on_the_port_is_not_ssh() {
+        let port = fake_server(Some(b"HTTP/1.1 400 Bad Request\r\n\r\n"));
+        assert!(!ssh_probe("127.0.0.1", port));
+    }
+
+    /// 没人监听 ⇒ 连不上 ⇒ false。(注意这条在开着全局 TUN 的机器上可能失败,
+    /// 因为隧道会接受这个连接 —— 但那正是上面第二条测的东西, 而且 127.0.0.1
+    /// 通常不走隧道。)
+    #[test]
+    fn a_closed_port_is_not_reachable() {
+        // 绑了就丢, 端口随即空出来。
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        assert!(!ssh_probe("127.0.0.1", port));
+    }
 }
