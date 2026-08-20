@@ -91,6 +91,13 @@ fn home_of(user: &str) -> Option<PathBuf> {
     line.trim().split(':').nth(5).filter(|s| !s.is_empty()).map(PathBuf::from)
 }
 
+/// Windows 上到不了这里 —— `ci_key_login_user` 恒为 None, 调用点进不去这个
+/// 分支。存在只是为了让它编译得过。
+#[cfg(not(unix))]
+fn home_of(_user: &str) -> Option<PathBuf> {
+    None
+}
+
 pub fn ensure_ssh_key_exists() -> Result<PathBuf> {
     let ssh_dir = get_ssh_dir()?;
     let priv_key_path = ssh_dir.join("id_rsa");
