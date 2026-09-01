@@ -249,7 +249,16 @@ WantedBy=multi-user.target
 
 /// Configure Caddy reverse proxy for ops serve
 pub fn configure_caddy(port: u16) -> Result<()> {
-    let caddyfile = format!(r#":80 {{
+    // Global options FIRST. `grace_period` bounds how long a reload waits for
+    // the old server's connections to drain. Without it Caddy waits forever —
+    // and an app with always-on WebSocket clients (agent daemons) never drains,
+    // so `systemctl reload caddy` hits systemd's 90s timeout on every deploy
+    // while the new config has in fact already loaded. 30s < that timeout.
+    let caddyfile = format!(r#"{{
+    grace_period 30s
+}}
+
+:80 {{
     import /etc/caddy/routes.d/*.caddy
 
     # Fallback: ops-serve daemon
