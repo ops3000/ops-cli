@@ -796,7 +796,7 @@ fn upload_caddy_routes_for_app(session: &SshSession, config: &OpsToml, app: &App
 
     let validate = session.exec("caddy validate --config /etc/caddy/Caddyfile", None);
     if validate.is_ok() {
-        session.exec("systemctl reload caddy", None)?;
+        crate::commands::caddy::reload_and_verify(session)?;
         o_success!("   ✔ Caddy reloaded");
     } else {
         o_warn!("   {} Caddy validation failed", "⚠".yellow());
@@ -1074,8 +1074,8 @@ fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Opti
     }
 
     if routes_written {
-        // Validate & reload Caddy
-        session.exec("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy", None)?;
+        // Validate & reload Caddy — bounded, and verified against the running config
+        crate::commands::caddy::reload_and_verify(session)?;
     }
 
     Ok(())
@@ -1518,8 +1518,8 @@ fn upload_caddy_routes_bg(
         }
     }
 
-    // Validate & reload Caddy
-    session.exec("caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy", None)?;
+    // Validate & reload Caddy — bounded, and verified against the running config
+    crate::commands::caddy::reload_and_verify(session)?;
     o_success!("   ✔ Caddy reloaded");
 
     Ok(())

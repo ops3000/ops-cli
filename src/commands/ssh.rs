@@ -268,13 +268,16 @@ impl SshSession {
         &self.target_str
     }
 
-    /// 构建 ssh Command，复用已有的 key
+    /// 构建 ssh Command，复用已有的 key。每条都带保活(`utils::SSH_KEEPALIVE_OPTS`)。
     fn command(&self) -> Command {
         let mut cmd = Command::new("ssh");
         cmd.arg("-i").arg(&self.key_path)
            .arg("-o").arg("StrictHostKeyChecking=no")
            .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
            .arg("-o").arg("LogLevel=ERROR");
+        for opt in utils::SSH_KEEPALIVE_OPTS {
+            cmd.arg("-o").arg(opt);
+        }
         if let Some(pc) = &self.proxy_command {
             cmd.arg("-o").arg(pc);
         }
@@ -282,26 +285,19 @@ impl SshSession {
         cmd
     }
 
-    /// 执行远程命令（stdout/stderr 直接输出）
+    /// 执行远程命令（stdout/stderr 直接输出）。默认总时限见 `utils::default_ssh_deadline`。
     pub fn exec(&self, command: &str, stdin_data: Option<&str>) -> Result<()> {
+        self.exec_timeout(command, stdin_data, utils::default_ssh_deadline())
+    }
+
+    /// `exec`, 但时限由调用方给 —— 到点就杀掉 ssh 并报错, 不等远端自己回来。
+    pub fn exec_timeout(&self, command: &str, stdin_data: Option<&str>, deadline: std::time::Duration) -> Result<()> {
         let mut cmd = self.command();
         cmd.arg(command);
-
-        if let Some(data) = stdin_data {
-            cmd.stdin(Stdio::piped());
-            let mut child = cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit()).spawn()?;
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(data.as_bytes())?;
-            }
-            let status = child.wait()?;
-            if !status.success() {
-                return Err(anyhow::anyhow!("Remote command failed with status: {}", status));
-            }
-        } else {
-            let status = cmd.status()?;
-            if !status.success() {
-                return Err(anyhow::anyhow!("Remote command failed with status: {}", status));
-            }
+        let out = utils::run_with_deadline(&mut cmd, deadline, false, stdin_data.map(str::as_bytes))
+            .with_context(|| format!("Remote command `{}`", first_words(command)))?;
+        if !out.status.success() {
+            return Err(anyhow::anyhow!("Remote command failed with status: {}", out.status));
         }
         Ok(())
     }
@@ -322,9 +318,10 @@ impl SshSession {
         let proxy_part = self.proxy_command.as_deref()
             .map(|pc| format!(" -o \"{}\"", pc))
             .unwrap_or_default();
+        let keepalive: String = utils::SSH_KEEPALIVE_OPTS.iter().map(|o| format!(" -o {o}")).collect();
         let ssh_cmd = format!(
-            "ssh -i \"{}\" -o StrictHostKeyChecking=no -o {} -o LogLevel=ERROR{}",
-            self.key_path, utils::SSH_KNOWN_HOSTS_OPT, proxy_part
+            "ssh -i \"{}\" -o StrictHostKeyChecking=no -o {} -o LogLevel=ERROR{}{}",
+            self.key_path, utils::SSH_KNOWN_HOSTS_OPT, keepalive, proxy_part
         );
         let remote = format!("{}:{}/", self.ssh_target, remote_path);
 
@@ -401,15 +398,31 @@ impl SshSession {
 
     /// 执行远程命令并捕获 stdout
     pub fn exec_output(&self, command: &str) -> Result<Vec<u8>> {
+        self.exec_output_timeout(command, utils::default_ssh_deadline())
+    }
+
+    /// `exec_output`, 时限由调用方给。
+    pub fn exec_output_timeout(&self, command: &str, deadline: std::time::Duration) -> Result<Vec<u8>> {
         let mut cmd = self.command();
         cmd.arg(command);
 
-        let output = cmd.output().context("Failed to execute remote command")?;
+        let output = utils::run_with_deadline(&mut cmd, deadline, true, None)
+            .with_context(|| format!("Failed to execute remote command `{}`", first_words(command)))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(anyhow::anyhow!("Remote command failed: {}. {}", output.status, stderr));
         }
         Ok(output.stdout)
+    }
+}
+
+/// 报错里只带命令的开头 —— 有的命令是一整段脚本。
+fn first_words(command: &str) -> String {
+    let one_line = command.lines().next().unwrap_or("");
+    if one_line.chars().count() > 80 {
+        format!("{}…", one_line.chars().take(80).collect::<String>())
+    } else {
+        one_line.to_string()
     }
 }
 
@@ -478,6 +491,24 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::net::TcpListener;
+
+    /// 一条连接死掉的 ssh 要在一分钟内自己断, 不能挂到天荒地老。
+    #[test]
+    fn every_session_command_carries_keepalive() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let key_path = f.path().to_string_lossy().into_owned();
+        let s = SshSession {
+            ssh_target: "root@example.invalid".into(),
+            _temp_key_file: f,
+            key_path,
+            target_str: "11".into(),
+            proxy_command: None,
+        };
+        let args: Vec<String> = s.command().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        for o in utils::SSH_KEEPALIVE_OPTS {
+            assert!(args.iter().any(|a| a == o), "{o} missing from {args:?}");
+        }
+    }
 
     /// 起一个假服务器: 接受一条连接, 按 `speak` 决定说什么, 然后关闭。
     /// 返回它的端口。

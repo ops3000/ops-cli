@@ -9,6 +9,81 @@ pub const SSH_KNOWN_HOSTS_OPT: &str = if cfg!(windows) {
     "UserKnownHostsFile=/dev/null"
 };
 
+/// 每条 ssh 都带的保活: 15 秒一次 keepalive, 连续 4 次没回就断 (对端死了一分钟内知道),
+/// 连接本身 20 秒建不起来就放弃。只能发现「连接死了」—— 2026-09-28 那次对端 sshd 活着、
+/// 只是永远不关 channel, 保活照样有回音, 所以另有 `run_with_deadline` 的总时限兜底。
+pub const SSH_KEEPALIVE_OPTS: [&str; 3] = [
+    "ServerAliveInterval=15",
+    "ServerAliveCountMax=4",
+    "ConnectTimeout=20",
+];
+
+/// 远程命令默认的总时限。给整条 deploy 里最长的那种活 (节点上 docker build) 留足余量;
+/// `OPS_SSH_TIMEOUT_SECS` 可改。不是「一般要多久」, 是「过了这个点一定是挂了」。
+pub fn default_ssh_deadline() -> std::time::Duration {
+    let secs = std::env::var("OPS_SSH_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(60 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
+/// 跑一个子进程, 到点还没结束就杀掉并报错 —— 一个永远不返回的远程命令不能把调用方
+/// (以及跑它的 CI) 一起挂住。`capture` 时收集 stdout/stderr (后台线程读, 管道写满也不会卡死),
+/// 否则继承当前终端。`stdin` 有值时写进去再关掉。退出码不在这里判, 交给调用方。
+pub fn run_with_deadline(
+    cmd: &mut std::process::Command,
+    deadline: std::time::Duration,
+    capture: bool,
+    stdin: Option<&[u8]>,
+) -> Result<std::process::Output> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    if capture {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    } else {
+        cmd.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    }
+    let mut child = cmd.spawn()?;
+    if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        pipe.write_all(data)?;
+    }
+    let reader = |p: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = p {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = reader(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let err = reader(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("timed out after {}s and was killed", deadline.as_secs()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
+
 /// 收紧私钥临时文件权限。Unix 下 chmod 600 (OpenSSH 强制要求);
 /// Windows 下 %TEMP% 的 ACL 默认仅限当前用户, Win32-OpenSSH 直接接受, 无需处理。
 pub fn secure_key_permissions(file: &std::fs::File) -> std::io::Result<()> {
@@ -99,6 +174,34 @@ pub fn parse_target(target_str: &str) -> Result<Target> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-09-28: 一条 `systemctl reload caddy` 在远端挂了 30 多分钟, CI 一起挂着。
+    /// 到点的命令必须被杀掉并报错, 不能等它自己回来。
+    #[cfg(unix)]
+    #[test]
+    fn a_command_past_its_deadline_is_killed_not_waited_for() {
+        let started = std::time::Instant::now();
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("5");
+        let r = run_with_deadline(&mut cmd, std::time::Duration::from_secs(1), true, None);
+        assert!(r.is_err(), "a hung command is an error, not an eventual success");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "killed at the deadline, took {:?}", started.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_and_stdin_still_flow_within_the_deadline() {
+        let mut cmd = std::process::Command::new("cat");
+        let out = run_with_deadline(&mut cmd, std::time::Duration::from_secs(5), true, Some(b"hello")).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"hello");
+    }
+
+    #[test]
+    fn keepalive_notices_a_dead_peer_within_a_minute() {
+        assert!(SSH_KEEPALIVE_OPTS.contains(&"ServerAliveInterval=15"));
+        assert!(SSH_KEEPALIVE_OPTS.contains(&"ServerAliveCountMax=4"));
+    }
 
     #[test]
     fn test_parse_target_node_id() {

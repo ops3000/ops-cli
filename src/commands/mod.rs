@@ -1,3 +1,4 @@
+pub mod caddy;
 pub mod ci_key;
 pub mod login;
 pub mod project;
