@@ -89,19 +89,26 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
         return Err(anyhow!("Failed to upload Caddy route"));
     }
 
-    // Validate and reload Caddy
-    let reload_cmd = "caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy";
-    let status = Command::new("ssh")
-        .arg("-i").arg(&key_path)
+    // Validate and reload Caddy (same bounded path as deploy, see caddy.rs)
+    let reload_cmd = crate::commands::caddy::reload_script();
+    let mut reload = Command::new("ssh");
+    reload.arg("-i").arg(&key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
         .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
-        .arg("-o").arg("LogLevel=ERROR")
-        .arg(&ssh_target)
-        .arg(reload_cmd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if !status.success() {
+        .arg("-o").arg("LogLevel=ERROR");
+    for opt in utils::SSH_KEEPALIVE_OPTS {
+        reload.arg("-o").arg(opt);
+    }
+    reload.arg(&ssh_target).arg(&reload_cmd);
+    let reloaded = utils::run_with_deadline(
+        &mut reload,
+        std::time::Duration::from_secs(crate::commands::caddy::RELOAD_DEADLINE_SECS + 30),
+        true,
+        None,
+    )
+    .map(|o| o.status.success())
+    .unwrap_or(false);
+    if !reloaded {
         let _ = cleanup_caddy(&key_path, &ssh_target, &conf_name);
         let _ = api::delete_tunnel(&token, tunnel_id).await;
         return Err(anyhow!("Failed to reload Caddy config"));
@@ -177,18 +184,24 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
 
 fn cleanup_caddy(key_path: &str, ssh_target: &str, conf_name: &str) -> Result<()> {
     let cmd = format!(
-        "rm -f /etc/caddy/routes.d/{} && caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy",
+        "rm -f /etc/caddy/routes.d/{} && {}",
         conf_name,
+        crate::commands::caddy::reload_script(),
     );
-    Command::new("ssh")
-        .arg("-i").arg(key_path)
+    let mut ssh = Command::new("ssh");
+    ssh.arg("-i").arg(key_path)
         .arg("-o").arg("StrictHostKeyChecking=no")
         .arg("-o").arg(utils::SSH_KNOWN_HOSTS_OPT)
-        .arg("-o").arg("LogLevel=ERROR")
-        .arg(ssh_target)
-        .arg(&cmd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+        .arg("-o").arg("LogLevel=ERROR");
+    for opt in utils::SSH_KEEPALIVE_OPTS {
+        ssh.arg("-o").arg(opt);
+    }
+    ssh.arg(ssh_target).arg(&cmd);
+    utils::run_with_deadline(
+        &mut ssh,
+        std::time::Duration::from_secs(crate::commands::caddy::RELOAD_DEADLINE_SECS + 30),
+        true,
+        None,
+    )?;
     Ok(())
 }
