@@ -772,8 +772,8 @@ fn upload_caddy_routes_for_app(session: &SshSession, config: &OpsToml, app: &App
     // App target route
     let matcher = conf_name.replace('-', "_");
     caddy_content.push_str(&format!(
-        "# {}\n@{} header X-OPS-Target {}\nhandle @{} {{\n    reverse_proxy {}:{}\n}}\n",
-        target, matcher, target, matcher, ip, port
+        "# {}\n@{} header X-OPS-Target {}\nhandle @{} {{\n    {}\n}}\n",
+        target, matcher, target, matcher, crate::commands::caddy::reverse_proxy(&format!("{}:{}", ip, port))
     ));
 
     // Domain routes
@@ -781,8 +781,8 @@ fn upload_caddy_routes_for_app(session: &SshSession, config: &OpsToml, app: &App
         let domain = &route.domain;
         let route_matcher = domain.replace('.', "_").replace('-', "_");
         caddy_content.push_str(&format!(
-            "\n# {}\n@{} host {}\nhandle @{} {{\n    reverse_proxy {}:{}\n}}\n",
-            domain, route_matcher, domain, route_matcher, ip, port
+            "\n# {}\n@{} host {}\nhandle @{} {{\n    {}\n}}\n",
+            domain, route_matcher, domain, route_matcher, crate::commands::caddy::reverse_proxy(&format!("{}:{}", ip, port))
         ));
         o_detail!("   ✔ {} → {}:{}", domain.cyan(), ip, port);
     }
@@ -1004,10 +1004,10 @@ fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Opti
             let target = format!("{}.{}", deployed_app, project_name);
             let matcher_name = format!("ops_{}_{}", deployed_app, project_name).replace('-', "_");
             let caddy_snippet = format!(
-                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
                 target = target,
                 matcher = matcher_name,
-                port = first_port,
+                proxy = crate::commands::caddy::reverse_proxy(&format!("127.0.0.1:{first_port}")),
             );
             let conf_name = format!("ops-{}-{}.caddy", deployed_app, project_name);
             session.exec(
@@ -1021,10 +1021,10 @@ fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Opti
                 let safe_domain = route.domain.replace('.', "_").replace('-', "_");
                 let matcher_name = format!("ops_route_{}", safe_domain);
                 let caddy_snippet = format!(
-                    "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                    "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
                     domain = route.domain,
                     matcher = matcher_name,
-                    port = route.port,
+                    proxy = crate::commands::caddy::reverse_proxy(&format!("127.0.0.1:{}", route.port)),
                 );
                 let conf_name = format!("ops-route-{}.caddy", safe_domain);
                 session.exec(
@@ -1058,10 +1058,10 @@ fn upload_caddy_routes(config: &OpsToml, session: &SshSession, app_filter: &Opti
             let target = format!("{}.{}", app.name, project_name);
             let matcher_name = format!("ops_{}_{}", app.name, project_name).replace('-', "_");
             let caddy_snippet = format!(
-                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
                 target = target,
                 matcher = matcher_name,
-                port = port,
+                proxy = crate::commands::caddy::reverse_proxy(&format!("127.0.0.1:{port}")),
             );
             let conf_name = format!("ops-{}-{}.caddy", app.name, project_name);
             session.exec(
@@ -1483,10 +1483,10 @@ fn upload_caddy_routes_bg(
             let safe_domain = route.domain.replace('.', "_").replace('-', "_");
             let matcher_name = format!("ops_route_{}", safe_domain);
             let caddy_snippet = format!(
-                "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    reverse_proxy {upstream}\n}}\n",
+                "# {domain}\n@{matcher} header X-Forwarded-Host {domain}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
                 domain = route.domain,
                 matcher = matcher_name,
-                upstream = upstream,
+                proxy = crate::commands::caddy::reverse_proxy(&upstream),
             );
             let conf_name = format!("ops-route-{}.caddy", safe_domain);
             session.exec(
@@ -1504,11 +1504,10 @@ fn upload_caddy_routes_bg(
             let target = format!("{}.{}", app.name, project_name);
             let matcher_name = format!("ops_{}_{}", app.name, project_name).replace('-', "_");
             let caddy_snippet = format!(
-                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy {ip}:{port}\n}}\n",
+                "# {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
                 target = target,
                 matcher = matcher_name,
-                ip = ip,
-                port = port,
+                proxy = crate::commands::caddy::reverse_proxy(&format!("{ip}:{port}")),
             );
             let conf_name = format!("ops-{}-{}.caddy", app.name, project_name);
             session.exec(

@@ -59,10 +59,10 @@ pub async fn handle_tunnel(target: String, local_port: u16, node_id: u64) -> Res
     let target_header = format!("{}.{}", subdomain, project_name);
     let matcher_name = format!("ops_tunnel_{}_{}", subdomain, project_name).replace('-', "_");
     let caddy_snippet = format!(
-        "# tunnel: {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    reverse_proxy 127.0.0.1:{port}\n}}\n",
+        "# tunnel: {target}\n@{matcher} header X-OPS-Target {target}\nhandle @{matcher} {{\n    {proxy}\n}}\n",
         target = target_header,
         matcher = matcher_name,
-        port = remote_port,
+        proxy = crate::commands::caddy::reverse_proxy(&format!("127.0.0.1:{remote_port}")),
     );
 
     let conf_name = format!("ops-tunnel-{}-{}.caddy", subdomain, project_name);
