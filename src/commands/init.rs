@@ -262,9 +262,9 @@ pub fn configure_caddy(port: u16) -> Result<()> {
     import /etc/caddy/routes.d/*.caddy
 
     # Fallback: ops-serve daemon
-    reverse_proxy 127.0.0.1:{}
+    {}
 }}
-"#, port);
+"#, crate::commands::caddy::reverse_proxy(&format!("127.0.0.1:{port}")));
 
     fs::create_dir_all("/etc/caddy/routes.d")
         .context("Failed to create /etc/caddy/routes.d")?;
