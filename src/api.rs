@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use crate::config::current_org;
 use crate::types::{
     ErrorResponse, LoginResponse, CiKeyResponse, RegisterResponse, WhoamiResponse,
+    IssuedTokenResponse, RevokeAllResponse,
     ProjectResponse, ServerWhoamiResponse, NodeSetResponse, ProjectListResponse,
     SyncAppResponse, CreateDeploymentResponse, UpdateDeploymentResponse,
     OpsToml,
@@ -72,6 +73,32 @@ pub async fn login(username: &str, password: &str) -> Result<LoginResponse> {
     let client = api_client();
     let body = serde_json::json!({ "username": username, "password": password });
     let res = client.post(format!("{}/auth/login", base_url())).json(&body).send().await?;
+    handle_response(res).await
+}
+
+/// POST /auth/refresh — trade a still-valid token for a new one (same version, same lifetime)
+pub async fn refresh_token(token: &str) -> Result<IssuedTokenResponse> {
+    let client = api_client();
+    let res = client.post(format!("{}/auth/refresh", base_url()))
+        .bearer_auth(token).send().await?;
+    handle_response(res).await
+}
+
+/// POST /auth/revoke-all — bump the account's token version: every token issued
+/// before is dead; the response carries a fresh one for this caller
+pub async fn revoke_all_tokens(token: &str) -> Result<RevokeAllResponse> {
+    let client = api_client();
+    let res = client.post(format!("{}/auth/revoke-all", base_url()))
+        .bearer_auth(token).send().await?;
+    handle_response(res).await
+}
+
+/// POST /auth/tokens — a named token for CI / another machine (1–365 days)
+pub async fn create_token(token: &str, name: &str, ttl_days: u32) -> Result<IssuedTokenResponse> {
+    let client = api_client();
+    let body = serde_json::json!({ "name": name, "ttl_days": ttl_days });
+    let res = client.post(format!("{}/auth/tokens", base_url()))
+        .bearer_auth(token).json(&body).send().await?;
     handle_response(res).await
 }
 

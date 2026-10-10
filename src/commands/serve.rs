@@ -151,14 +151,98 @@ pub async fn handle_serve(token: String, port: u16, compose_dir: String, node_id
     Ok(())
 }
 
+/// Where the daemon's token lives: readable by root (Unix) / SYSTEM + Administrators
+/// (Windows) only. The service runs `ops serve --token-file <this>`, so the token
+/// is in neither the unit/task definition nor the process command line.
+pub fn token_file_path() -> std::path::PathBuf {
+    if cfg!(windows) {
+        let base = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        std::path::Path::new(&base).join("ops").join("serve.token")
+    } else {
+        std::path::PathBuf::from("/etc/ops/serve.token")
+    }
+}
+
+/// Write the daemon token to [`token_file_path`], owner-only.
+pub fn write_token_file(token: &str) -> Result<std::path::PathBuf> {
+    let path = token_file_path();
+    let dir = path.parent().context("token file has no parent directory")?;
+    std::fs::create_dir_all(dir).with_context(|| format!("Failed to create {}", dir.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true).create(true).truncate(true).mode(0o600)
+            .open(&path)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        // mode() only applies on create; an existing file keeps its old mode
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(token.as_bytes())?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        // Lock the DIRECTORY down first, then write: a file created inside it inherits
+        // SYSTEM + Administrators only, so the token is never readable by Users —— not
+        // even for a moment, and not if a later step fails. Owner goes to Administrators
+        // so a user who pre-created the folder can't re-grant themselves access.
+        // SIDs, not names: "Administrators" is localized on non-English Windows.
+        // S-1-5-18 = SYSTEM (the scheduled task's account), S-1-5-32-544 = Administrators
+        let icacls = |target: &std::path::Path, args: &[&str]| -> Result<()> {
+            let status = std::process::Command::new("icacls")
+                .arg(target)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .context("Failed to run icacls")?;
+            if !status.success() {
+                anyhow::bail!("icacls failed on {} (run from an Administrator PowerShell)", target.display());
+            }
+            Ok(())
+        };
+        icacls(dir, &["/setowner", "*S-1-5-32-544"])?;
+        icacls(dir, &["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"])?;
+        if path.exists() {
+            // left over from an earlier install: reset it to what the folder now passes down
+            icacls(&path, &["/setowner", "*S-1-5-32-544"])?;
+            icacls(&path, &["/reset"])?;
+        }
+        std::fs::write(&path, token).with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+
+    Ok(path)
+}
+
+/// The token `ops serve` authenticates with: --token-file, else OPS_SERVE_TOKEN / --token.
+pub fn resolve_token(token: Option<String>, token_file: Option<std::path::PathBuf>) -> Result<String> {
+    if let Some(p) = token_file {
+        let t = std::fs::read_to_string(&p)
+            .with_context(|| format!("Failed to read token file {}", p.display()))?;
+        let t = t.trim().to_string();
+        if t.is_empty() {
+            anyhow::bail!("Token file {} is empty", p.display());
+        }
+        return Ok(t);
+    }
+    token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .context("ops serve needs a token: --token-file <path> (preferred), the OPS_SERVE_TOKEN env var, or --token")
+}
+
 /// Windows: 注册计划任务, 对标 Linux 的 systemd 服务。
 /// 开机以 SYSTEM 运行 (无窗口), 失败每分钟自动重启。
 fn install_windows_task(token: &str, port: u16, compose_dir: &str, node_id: Option<u64>) -> Result<()> {
     let exe_path = std::env::current_exe()?;
+    let token_file = write_token_file(token)?;
     let node_id_arg = node_id.map(|id| format!(" --node-id {}", id)).unwrap_or_default();
+    // PowerShell 单引号字符串里, 参数中的双引号原样传给 ops (路径可能带空格)
     let arguments = format!(
-        "serve --token {} --port {} --compose-dir {}{}",
-        token, port, compose_dir, node_id_arg
+        "serve --token-file \"{}\" --port {} --compose-dir {}{}",
+        token_file.display(), port, compose_dir, node_id_arg
     );
 
     // ExecutionTimeLimit Zero: 计划任务默认跑 72 小时会被杀, 必须显式关闭
@@ -200,6 +284,7 @@ pub async fn handle_install(token: String, port: u16, compose_dir: String, _doma
     }
 
     let exe_path = std::env::current_exe()?;
+    let token_file = write_token_file(&token)?;
     let node_id_arg = node_id.map(|id| format!(" --node-id {}", id)).unwrap_or_default();
     let service = format!(
         r#"[Unit]
@@ -209,7 +294,7 @@ Wants=docker.service
 
 [Service]
 Type=simple
-ExecStart={} serve --token {} --port {} --compose-dir {}{}
+ExecStart={} serve --token-file {} --port {} --compose-dir {}{}
 Restart=always
 RestartSec=5
 
@@ -217,7 +302,7 @@ RestartSec=5
 WantedBy=multi-user.target
 "#,
         exe_path.display(),
-        token,
+        token_file.display(),
         port,
         compose_dir,
         node_id_arg

@@ -3,6 +3,27 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize, Debug)]
 pub struct LoginResponse {
     pub token: String,
+    /// Absent from backends older than 2026-10 (their tokens lasted 100 years)
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// POST /auth/refresh, POST /auth/tokens
+#[derive(Deserialize, Debug)]
+pub struct IssuedTokenResponse {
+    pub token: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+/// POST /auth/revoke-all
+#[derive(Deserialize, Debug)]
+pub struct RevokeAllResponse {
+    pub message: String,
+    pub token_version: i64,
+    pub token: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 

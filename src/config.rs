@@ -51,8 +51,40 @@ fn get_config_path() -> Result<PathBuf> {
 pub fn save_config(config: &Config) -> Result<()> {
     let path = get_config_path()?;
     let content = serde_json::to_string_pretty(config)?;
-    fs::write(path, content).context("Failed to write config file")
+    write_owner_only(&path, content.as_bytes()).context("Failed to write config file")?;
+    Ok(())
 }
+
+/// Create the file 0600 from the start (not write-then-chmod); an existing
+/// file from an older version is tightened too.
+#[cfg(unix)]
+fn write_owner_only(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    restrict_to_owner(path);
+    f.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_owner_only(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(path, bytes)
+}
+
+/// The credentials file holds a login token: owner-only (0600). Files written by
+/// versions before 0.13 were 0644 —— tightened on the next read or write.
+#[cfg(unix)]
+fn restrict_to_owner(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.permissions().mode() & 0o077 != 0 {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &std::path::Path) {}
 
 pub fn load_config() -> Result<Config> {
     // 1. 优先检查环境变量
@@ -68,6 +100,7 @@ pub fn load_config() -> Result<Config> {
         return Ok(Config::default());
     }
     
+    restrict_to_owner(&path);
     let content = fs::read_to_string(path).context("Failed to read config file")?;
     serde_json::from_str(&content).context("Failed to parse config file")
 }
