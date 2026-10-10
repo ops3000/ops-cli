@@ -5,14 +5,15 @@
 Start the HTTP monitoring daemon that exposes container status, logs, and metrics.
 
 ```bash
-ops serve --token <token> --compose_dir <dir> [OPTIONS]
+ops serve --token-file /etc/ops/serve.token --compose_dir <dir> [OPTIONS]
 ```
 
 **Options:**
 
 | Option          | Default | Description                                        |
 | --------------- | ------- | -------------------------------------------------- |
-| `--token`       | (required) | Bearer token for API authentication             |
+| `--token-file`  |         | Read the serve token from this file (what `--install` and `ops init` set up: `/etc/ops/serve.token`, root-only; `%ProgramData%\ops\serve.token` on Windows, SYSTEM + Administrators only) |
+| `--token`       |         | The serve token itself, or the `OPS_SERVE_TOKEN` env var. A value on the command line is visible to every local user in `ps` —— prefer `--token-file` |
 | `--port`        | `8377`  | Port to listen on                                  |
 | `--compose_dir` | (required) | Docker Compose project directory                |
 | `--install`     |         | Install as systemd service + nginx reverse proxy   |
@@ -41,7 +42,7 @@ The daemon checks for updates every 5 minutes and auto-restarts when a new binar
 ops serve --token <token> --compose_dir /opt/myapp --install --domain mynode.ops.autos
 ```
 
-This creates `/etc/systemd/system/ops-serve.service` and configures nginx.
+This writes the token to `/etc/ops/serve.token` (0600), creates `/etc/systemd/system/ops-serve.service` running `ops serve --token-file /etc/ops/serve.token …`, and configures nginx.
 
 {% hint style="info" %}
 You typically don't run `ops serve` manually. It's installed automatically by `ops init`.

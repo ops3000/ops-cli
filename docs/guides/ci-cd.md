@@ -4,13 +4,15 @@ OPS can be integrated into CI/CD pipelines for automated deployments.
 
 ## Authentication
 
-Set the `OPS_TOKEN` environment variable in your pipeline. Get the token:
+Set the `OPS_TOKEN` environment variable in your pipeline. Issue a token for it —
+named, so you can tell it apart, and long-lived enough for CI (up to 365 days):
 
 ```bash
-ops token
+ops token create --name gh:owner/repo --ttl-days 365 | gh secret set OPS_TOKEN --repo owner/repo
 ```
 
-Add it as a secret in your CI/CD provider (e.g., `OPS_TOKEN` in GitHub Actions secrets).
+Re-issue it before it expires. `ops token revoke-all` kills it along with every
+other token of your account.
 
 ## GitHub Actions Example
 

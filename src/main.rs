@@ -11,6 +11,7 @@ mod commands;
 mod config;
 mod scanner;
 mod serve;
+mod session;
 mod ssh;
 mod types;
 mod utils;
@@ -114,8 +115,11 @@ enum Commands {
         target: String,
     },
 
-    /// Print the current session token to stdout
-    Token,
+    /// Print the current session token to stdout (or: create / revoke-all)
+    Token {
+        #[command(subcommand)]
+        action: Option<TokenCommands>,
+    },
     
     /// Manage environment variables for a target
     #[command(subcommand)]
@@ -245,9 +249,15 @@ enum Commands {
 
     /// Start HTTP server exposing container status, logs, metrics
     Serve {
-        /// Bearer token for authentication
+        /// Bearer token for authentication. Prefer --token-file or the OPS_SERVE_TOKEN
+        /// env var: a value given here is visible to every local user in `ps`
+        #[arg(long, env = "OPS_SERVE_TOKEN", hide_env_values = true)]
+        token: Option<String>,
+        /// Read the token from this file (owner-only). What `--install` sets up.
+        /// Wins over --token / OPS_SERVE_TOKEN (not a clap conflict: a value from the
+        /// env var counts as given, and would make the two flags refuse each other)
         #[arg(long)]
-        token: String,
+        token_file: Option<std::path::PathBuf>,
         /// Port to listen on
         #[arg(long, default_value = "8377")]
         port: u16,
@@ -298,6 +308,25 @@ enum EnvCommands {
     Upload { target: String },
     /// Download .env file from the target server
     Download { target: String },
+}
+
+#[derive(Subcommand)]
+enum TokenCommands {
+    /// Issue a named token for CI or another machine (token on stdout, e.g. `ops token create --name gh-ci --ttl-days 365 | gh secret set OPS_TOKEN`)
+    Create {
+        /// Label, e.g. gh:owner/repo or the machine's hostname
+        #[arg(long)]
+        name: String,
+        /// Lifetime in days (1–365)
+        #[arg(long, default_value_t = 90, value_parser = clap::value_parser!(u32).range(1..=365))]
+        ttl_days: u32,
+    },
+    /// Revoke EVERY token of your account (other machines, CI, old laptops); this machine gets a fresh one
+    RevokeAll {
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -515,6 +544,15 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Logins last 30 days; renew one that is inside its last week before using it
+    if !matches!(
+        &cli.command,
+        Commands::Register | Commands::Login | Commands::Logout | Commands::Update
+            | Commands::Version | Commands::Serve { .. }
+    ) {
+        session::refresh_if_expiring().await;
+    }
+
     let result = match &cli.command {
         Commands::Register => commands::register::handle_register().await,
         Commands::Login => commands::login::handle_login().await,
@@ -548,7 +586,13 @@ async fn main() -> Result<()> {
         Commands::Ssh { target, command, user } => commands::ssh::handle_ssh(target.clone(), command.clone(), user.as_deref()).await,
         Commands::Push { source, target } => commands::scp::handle_push(source.clone(), target.clone()).await,
 
-        Commands::Token => commands::token::handle_get_token().await,
+        Commands::Token { action } => match action {
+            None => commands::token::handle_get_token().await,
+            Some(TokenCommands::Create { name, ttl_days }) =>
+                commands::token::handle_create(name, *ttl_days).await,
+            Some(TokenCommands::RevokeAll { force }) =>
+                commands::token::handle_revoke_all(*force, interactive).await,
+        },
 
         Commands::Env(cmd) => match cmd {
             EnvCommands::Upload { target } => commands::env::handle_upload(target.clone()).await,
@@ -592,11 +636,13 @@ async fn main() -> Result<()> {
         Commands::Logs { service, file, tail, follow } =>
             commands::logs::handle_logs(file.clone(), service.clone(), *tail, *follow).await,
 
-        Commands::Serve { token, port, compose_dir, install, domain, node_id } => {
-            if *install {
-                commands::serve::handle_install(token.clone(), *port, compose_dir.clone(), domain.clone(), *node_id).await
-            } else {
-                commands::serve::handle_serve(token.clone(), *port, compose_dir.clone(), *node_id).await
+        Commands::Serve { token, token_file, port, compose_dir, install, domain, node_id } => {
+            match commands::serve::resolve_token(token.clone(), token_file.clone()) {
+                Err(e) => Err(e),
+                Ok(token) if *install =>
+                    commands::serve::handle_install(token, *port, compose_dir.clone(), domain.clone(), *node_id).await,
+                Ok(token) =>
+                    commands::serve::handle_serve(token, *port, compose_dir.clone(), *node_id).await,
             }
         },
 

@@ -1,6 +1,6 @@
 [package]
 name = "ops-cli"
-version = "0.12.7"
+version = "0.13.0"
 edition = "2021"
 
 [[bin]]
@@ -8,7 +8,7 @@ name = "ops"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive", "cargo"] }
+clap = { version = "4.4", features = ["derive", "cargo", "env"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }

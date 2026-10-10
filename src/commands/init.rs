@@ -191,22 +191,6 @@ fn configure_serve_daemon(
 ) -> Result<()> {
     o_step!("Configuring systemd service...");
 
-    let service_content = format!(r#"[Unit]
-Description=OPS Serve - Node {}
-After=network.target docker.service
-Requires=docker.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/ops serve --token {} --port {} --compose-dir {} --node-id {}
-Restart=always
-RestartSec=5
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=multi-user.target
-"#, node_id, token, port, compose_dir, node_id);
-
     let service_path = "/etc/systemd/system/ops-serve.service";
 
     // Check if running as root
@@ -215,6 +199,28 @@ WantedBy=multi-user.target
         o_warn!("Run with sudo or as root to enable auto-start.");
         return Ok(());
     }
+
+    // 令牌进 root-only 文件, unit 和进程命令行里只有路径
+    let token_file = crate::commands::serve::write_token_file(token)?;
+    // 用正在跑的这个二进制: 写死 /usr/local/bin/ops 的话, 那里若是认不得 --token-file 的旧版,
+    // 服务会在 Restart=always 下一直崩
+    let exe_path = std::env::current_exe().context("Failed to locate the ops binary")?;
+
+    let service_content = format!(r#"[Unit]
+Description=OPS Serve - Node {}
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart={} serve --token-file {} --port {} --compose-dir {} --node-id {}
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+"#, node_id, exe_path.display(), token_file.display(), port, compose_dir, node_id);
 
     fs::write(service_path, &service_content)
         .context("Failed to write systemd service file")?;
@@ -543,11 +549,24 @@ pub async fn handle_init(
     if cfg!(windows) {
         o_step!();
         o_warn!("{}", "Windows: node runtime (Docker/Caddy/systemd daemon) is Linux-only — skipping.".yellow());
-        o_warn!("{}", "To run the serve daemon manually (heartbeat + tunnel):".yellow());
-        o_detail!("  {}", format!(
-            "ops serve --token {} --port {} --node-id {}",
-            res.serve_token, res.serve_port, res.node_id
-        ).cyan());
+        match crate::commands::serve::write_token_file(&res.serve_token) {
+            Ok(token_file) => {
+                o_warn!("{}", "To run the serve daemon (heartbeat + tunnel) at boot, from an Administrator PowerShell:".yellow());
+                o_detail!("  {}", format!(
+                    "ops serve --install --token-file \"{}\" --port {} --node-id {}",
+                    token_file.display(), res.serve_port, res.node_id
+                ).cyan());
+            }
+            Err(e) => {
+                // 写不了受保护文件 (多半不是管理员) —— 退回旧做法, 但提醒令牌会出现在命令行里
+                o_warn!("{}", format!("Could not store the serve token in a protected file ({}).", e).yellow());
+                o_warn!("{}", "Re-run `ops init` as Administrator, or run the daemon manually (the token will be visible in the process list):".yellow());
+                o_detail!("  {}", format!(
+                    "ops serve --token {} --port {} --node-id {}",
+                    res.serve_token, res.serve_port, res.node_id
+                ).cyan());
+            }
+        }
     } else {
         o_step!();
         o_step!("{}", "Checking system dependencies...".cyan());
